@@ -40,6 +40,43 @@ class BluetoothFragment : Fragment() {
     private val ESP32_VENDOR_ID = 0x303A
     private val SCAN_PERIOD_MS = 10000L
 
+    /**
+     * Làm sạch tên thiết bị BLE.
+     *
+     * Hai loại tên rác thường gặp:
+     *   1. Chứa ký tự đặc biệt / không in được  → "SZZvX&UF-C{S"
+     *   2. Chứa data được encode thành alphanumeric → "5AEA000009KkpcSnZyVF-CL"
+     *      (dấu hiệu: đoạn chữ ≥ 8 ký tự CÓ CẢ BA loại: chữ hoa + chữ thường + số)
+     *
+     * Quy tắc:
+     *   1. Lọc ký tự: chỉ giữ A-Z a-z 0-9 space - _ . ( ) / : @ +
+     *   2. Nếu ký tự lạ chiếm > 30% → Unknown
+     *   3. Nếu tên trông như encoded data (đoạn dài ≥ 8 có upper+lower+digit) → Unknown
+     */
+    private fun sanitizeBleName(raw: String?): String {
+        if (raw.isNullOrEmpty()) return "Unknown"
+
+        // Bước 1: lọc ký tự không hợp lệ
+        val allowed = Regex("[A-Za-z0-9 \\-_.()/:@+]")
+        val cleaned = raw.filter { allowed.matches(it.toString()) }
+        val garbageRatio = 1.0 - cleaned.length.toDouble() / raw.length
+        if (cleaned.length < 2 || garbageRatio > 0.3) return "Unknown"
+
+        // Bước 2: phát hiện tên là encoded binary data
+        // Dấu hiệu: ít nhất một "từ" (đoạn alphanumeric liên tục) dài ≥ 8 ký tự
+        // VÀ chứa cả chữ hoa, chữ thường, chữ số cùng lúc → rất có thể là data encode
+        val segments = cleaned.split(Regex("[^A-Za-z0-9]+"))
+        val looksEncoded = segments.any { seg ->
+            seg.length >= 8 &&
+            seg.any { it.isLowerCase() } &&
+            seg.any { it.isUpperCase() } &&
+            seg.any { it.isDigit() }
+        }
+        if (looksEncoded) return "Unknown"
+
+        return cleaned.trim()
+    }
+
     // BLE scan callback — chỉ nhận BLE advertisements (không phải Classic Bluetooth)
     private val bleScanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -51,12 +88,7 @@ class BluetoothFragment : Fragment() {
             // Bỏ qua nếu đã có trong danh sách
             if (deviceList.none { it.address == device.address }) {
                 deviceList.add(device)
-                // Xử lý device name an toàn - tránh ký tự bậy
-                val name = try {
-                    device.name?.takeIf { it.isNotEmpty() } ?: "Unknown"
-                } catch (e: Exception) {
-                    "Unknown"
-                }
+                val name = try { sanitizeBleName(device.name) } catch (e: Exception) { "Unknown" }
                 deviceNameList.add("$name\n${device.address}")
                 requireActivity().runOnUiThread { listAdapter.notifyDataSetChanged() }
             }
@@ -106,7 +138,7 @@ class BluetoothFragment : Fragment() {
             val name = if (ActivityCompat.checkSelfPermission(
                     requireContext(), Manifest.permission.BLUETOOTH_CONNECT
                 ) == PackageManager.PERMISSION_GRANTED
-            ) device.name ?: "Unknown" else "Unknown"
+            ) sanitizeBleName(device.name) else "Unknown"
 
             val pairingFragment = PairingLoadingFragment().apply {
                 arguments = Bundle().also {
@@ -142,13 +174,11 @@ class BluetoothFragment : Fragment() {
             // Lưu transport vào holder để UwbFragment dùng lại
             TransportHolder.transport = usbTransport
 
-            // Nhận phản hồi từ S3 (FOUND, CONNECTED, CONNECT_FAILED, BLE_DISCONNECTED, ...)
+            // Nhận phản hồi từ S3 — chỉ log, không toast để tránh spam
+            // (UWB measurements đến ~2 Hz; PairingLoadingFragment/UwbFragment xử lý UI riêng)
             usbTransport.receive { data ->
                 val msg = String(data).trim()
-                android.util.Log.d("S3_MSG", msg)   // xem trong Logcat
-                requireActivity().runOnUiThread {
-                    Toast.makeText(requireContext(), "S3: $msg", Toast.LENGTH_SHORT).show()
-                }
+                android.util.Log.d("S3_MSG", msg)
             }
             requireActivity().runOnUiThread {
                 Toast.makeText(requireContext(), "Đã kết nối ESP32-S3 qua USB", Toast.LENGTH_SHORT).show()

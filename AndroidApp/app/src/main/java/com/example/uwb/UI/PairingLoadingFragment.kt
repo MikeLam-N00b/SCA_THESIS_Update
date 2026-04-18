@@ -15,6 +15,8 @@ import com.example.uwb.R
 import com.example.uwb.databinding.FragmentPairingLoadingBinding
 import com.example.uwb.transport.TransportHolder
 import com.example.uwb.transport.UsbTransport
+import com.example.uwb.dataLg.KeyManager
+import com.example.uwb.dataLg.PairedDeviceStore
 
 class PairingLoadingFragment : Fragment() {
 
@@ -59,12 +61,21 @@ class PairingLoadingFragment : Fragment() {
         return binding.root
     }
 
-    // ── Gửi lệnh CONNECT xuống Tag ─────────────────────────────────────────
+    // ── Gửi key + lệnh scan xuống Tag ─────────────────────────────────────
     private fun sendConnectCommand() {
-        val mac = deviceMac ?: return
-        usbTransport.send("CONNECT:$mac\n".toByteArray())
+        // Firmware chỉ nhận SET_KEY: và DISCONNECT — không có lệnh CONNECT:
+        val keyHex = KeyManager.getPairingKeyHex()
+        if (keyHex == "NOT_SET") {
+            Log.e("PairingLoading", "Pairing key chưa có — về VIN để pair lại")
+            onPairingFailed("Chưa có pairing key — nhập VIN trước")
+            return
+        }
+        Log.d("PairingKey", "╔══════════════════════════════════╗")
+        Log.d("PairingKey", "║   SENDING KEY TO TAG (USB)       ║")
+        Log.d("PairingKey", "║ SET_KEY:$keyHex")
+        Log.d("PairingKey", "╚══════════════════════════════════╝")
+        usbTransport.send("SET_KEY:$keyHex\n".toByteArray())
         updateStatus("Đang quét BLE...")
-        Log.d("PairingLoading", "Sent CONNECT:$mac")
     }
 
     // ── Animation xe chạy ngang ────────────────────────────────────────────
@@ -93,22 +104,39 @@ class PairingLoadingFragment : Fragment() {
     }
 
     // ── Lắng nghe phản hồi từ Tag qua USB ─────────────────────────────────
+    // USB CDC có thể gộp nhiều Serial.printf() thành 1 packet.
+    // Tách theo '\n' để xử lý từng dòng riêng.
     private fun listenForResponse() {
         usbTransport.receive { data ->
-            val msg = String(data).trim()
-            if (msg.isEmpty()) return@receive
-            Log.d("PairingLoading", "S3: $msg")
+            val raw = String(data)
+            if (raw.isBlank()) return@receive
+
+            val lines = raw.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+            Log.d("PairingLoading", "S3: $raw")
 
             val act = activity ?: return@receive
             act.runOnUiThread {
                 if (_binding == null || resultHandled) return@runOnUiThread
-                when {
-                    msg.startsWith("SCANNING")           -> updateStatus("Đang quét BLE...")
-                    msg.startsWith("FOUND:")             -> updateStatus("Đã tìm thấy thiết bị")
-                    msg.startsWith("BLE_CLIENT_CONNECTED") -> updateStatus("Đang xác thực kết nối...")
-                    msg.startsWith("CONNECTED:")         -> onPairingSuccess()
-                    msg.startsWith("NOT_FOUND:")         -> onPairingFailed("Không tìm thấy thiết bị")
-                    msg == "CONNECT_FAILED"              -> onPairingFailed("Kết nối BLE thất bại")
+                for (line in lines) {
+                    if (resultHandled) break
+                    when {
+                        line.startsWith("KEY_OK")                  -> updateStatus("Đang quét BLE...")
+                        line.startsWith("KEY_INVALID")             -> onPairingFailed("Key không hợp lệ")
+                        line.startsWith("SCANNING")                -> updateStatus("Đang quét BLE...")
+                        line.startsWith("FOUND:")                  -> updateStatus("Đã tìm thấy thiết bị")
+                        line.startsWith("[BLE] Connected")
+                            || line.startsWith("BLE_CLIENT_CONNECTED")
+                                                                   -> updateStatus("Đang xác thực...")
+                        line.startsWith("CONNECTED:")
+                            || line.startsWith("[BLE notify] AUTH_OK")
+                            || line.startsWith("KEY_FORWARDED_TO_ANCHOR:") -> onPairingSuccess()
+                        // Firmware đang chạy UWB rồi → vào thẳng UwbFragment
+                        line.contains("[uwbTask]")
+                            || line.startsWith("DISTANCE:")
+                            || line.startsWith("UNLOCK:")          -> onPairingSuccess()
+                        line.startsWith("NOT_FOUND:")              -> onPairingFailed("Không tìm thấy thiết bị")
+                        line == "CONNECT_FAILED"                   -> onPairingFailed("Kết nối BLE thất bại")
+                    }
                 }
             }
         }
@@ -119,6 +147,12 @@ class PairingLoadingFragment : Fragment() {
         resultHandled = true
         mainHandler.removeCallbacksAndMessages(null)
         carAnimator?.cancel()
+
+        // Lưu VIN→MAC để lần sau bỏ qua BLE scan
+        val vin = KeyManager.getVehicleId()
+        if (vin != null && deviceMac != null) {
+            PairedDeviceStore.savePairing(vin, deviceMac!!, deviceName ?: "Unknown")
+        }
 
         updateStatus("Kết nối thành công!")
 

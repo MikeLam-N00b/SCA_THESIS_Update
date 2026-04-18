@@ -18,7 +18,6 @@
 #include <mbedtls/ecdh.h>
 #include <mbedtls/gcm.h>
 #include <mbedtls/base64.h>
-#include <mbedtls/hkdf.h>
 
 // =============================================================================
 // FreeRTOS IPC primitives
@@ -61,11 +60,16 @@ static SemaphoreHandle_t spiMutex;
 // State variables (tối thiểu — phần lớn state nằm trong EventGroup)
 // =============================================================================
 
-static volatile bool carUnlocked    = false;
-static volatile bool hasKey         = false;
-static volatile bool bleStarted     = false;
-static volatile bool deviceConnected = false;
-static volatile bool authenticated  = false;
+static volatile bool    carUnlocked      = false;
+static volatile bool    hasKey           = false;
+static volatile bool    bleStarted       = false;
+static volatile bool    deviceConnected  = false;
+static volatile bool    authenticated    = false;
+// Incremented on every onConnect — bleTask embeds this in BLE_SEND_CHALLENGE so
+// stale messages from previous sessions can be detected and discarded.
+static volatile uint8_t connectionGen    = 0;
+
+static BLEServer*       pBleServer       = nullptr;  // global để bleTask có thể ngắt kết nối
 
 // =============================================================================
 // Hardware handles
@@ -139,6 +143,39 @@ static bool computeHMAC(const uint8_t* key, size_t keyLen,
                         uint8_t* output) {
     const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     return (mbedtls_md_hmac(md, key, keyLen, data, dataLen, output) == 0);
+}
+
+// HKDF-SHA256 theo RFC 5869 — thay thế mbedtls_hkdf() không có trong SDK cũ.
+// salt=NULL/0 → dùng 32 zero bytes (RFC 5869 §2.2).
+// Chỉ cần output <= 32 bytes (1 block SHA-256).
+static bool hkdfSha256(const uint8_t* salt, size_t saltLen,
+                       const uint8_t* ikm,  size_t ikmLen,
+                       const uint8_t* info, size_t infoLen,
+                       uint8_t* out, size_t outLen) {
+    if (outLen > 32) return false;
+    const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+
+    // Extract: PRK = HMAC-SHA256(salt, IKM)
+    uint8_t zeros[32] = {};
+    const uint8_t* s  = (salt && saltLen > 0) ? salt : zeros;
+    size_t         sl = (salt && saltLen > 0) ? saltLen : 32;
+    uint8_t prk[32];
+    if (mbedtls_md_hmac(md, s, sl, ikm, ikmLen, prk) != 0) return false;
+
+    // Expand: T(1) = HMAC-SHA256(PRK, info || 0x01)
+    uint8_t counter = 0x01;
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    if (mbedtls_md_setup(&ctx, md, 1) != 0) { mbedtls_md_free(&ctx); return false; }
+    mbedtls_md_hmac_starts(&ctx, prk, 32);
+    mbedtls_md_hmac_update(&ctx, info, infoLen);
+    mbedtls_md_hmac_update(&ctx, &counter, 1);
+    uint8_t t1[32];
+    mbedtls_md_hmac_finish(&ctx, t1);
+    mbedtls_md_free(&ctx);
+
+    memcpy(out, t1, outLen);
+    return true;
 }
 
 static void printHex(const char* label, const uint8_t* data, size_t length) {
@@ -424,9 +461,8 @@ static bool fetchPairingKeyViaSim(char* keyHexOut) {
 
     // HKDF → KEK 16 bytes
     uint8_t kek[16];
-    if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
-                     NULL, 0, shared_secret, 32,
-                     (const uint8_t*)"secure-check-kek", 16, kek, 16) != 0) {
+    if (!hkdfSha256(NULL, 0, shared_secret, 32,
+                    (const uint8_t*)"secure-check-kek", 16, kek, 16)) {
         Serial.println("[KEY] LOI: HKDF"); return false;
     }
 
@@ -559,14 +595,16 @@ class MyServerCallbacks : public BLEServerCallbacks {
         deviceConnected   = true;
         authenticated     = false;
         responseBufferLen = 0;
+        connectionGen++;   // new generation — invalidates any pending BLE_SEND_CHALLENGE
         xEventGroupSetBits(sysEvents, EVT_CONNECTED);
         xEventGroupClearBits(sysEvents, EVT_AUTHED | EVT_UWB_ACTIVE);
-        Serial.println("BLE: Tag connected");
+        Serial.printf("BLE: Tag connected (gen=%u)\n", (unsigned)connectionGen);
 
-        // Gửi BLE_SEND_CHALLENGE vào bleQueue
-        // bleTask sẽ delay CHALLENGE_SEND_DELAY_MS rồi mới gửi challenge
-        // (thay vì loop() check millis() mỗi vòng)
-        BleCmdMsg msg = {}; msg.type = BLE_SEND_CHALLENGE;
+        // Gửi BLE_SEND_CHALLENGE vào bleQueue, đính kèm generation ID.
+        // bleTask kiểm tra ID trước khi gửi challenge — nếu lệch (session cũ) thì bỏ qua.
+        BleCmdMsg msg = {};
+        msg.type    = BLE_SEND_CHALLENGE;
+        msg.data[0] = connectionGen;
         xQueueSend(bleQueue, &msg, pdMS_TO_TICKS(10));
     }
 
@@ -595,10 +633,10 @@ static void startBLE() {
 
     BLEDevice::init(DEVICE_NAME);
     BLEDevice::setPower(ESP_PWR_LVL_P9);
-    BLEServer* pServer = BLEDevice::createServer();
-    pServer->setCallbacks(new MyServerCallbacks());
+    pBleServer = BLEDevice::createServer();
+    pBleServer->setCallbacks(new MyServerCallbacks());
 
-    BLEService* pService = pServer->createService(SERVICE_UUID);
+    BLEService* pService = pBleServer->createService(SERVICE_UUID);
 
     pChallengeCharacteristic = pService->createCharacteristic(
         CHALLENGE_CHAR_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
@@ -788,24 +826,44 @@ static void bleTask(void* param) {
         if (xQueueReceive(bleQueue, &msg, pdMS_TO_TICKS(200)) == pdTRUE) {
             switch (msg.type) {
 
-            case BLE_SEND_CHALLENGE:
-                // Delay để Tag có thời gian subscribe notifications
-                vTaskDelay(pdMS_TO_TICKS(CHALLENGE_SEND_DELAY_MS));
+            case BLE_SEND_CHALLENGE: {
+                uint8_t myGen = msg.data[0];
+                // Bỏ qua ngay nếu là lệnh cũ từ session trước — không delay, không gửi.
+                if (myGen != (uint8_t)connectionGen) {
+                    Serial.printf("[BLE] Challenge gen=%u lỗi thời (hiện=%u) — bỏ qua\n",
+                                  myGen, (unsigned)connectionGen);
+                    break;
+                }
+                // Sinh challenge và setValue TRƯỚC khi delay để fallback readValue()
+                // của Tag luôn trả về challenge đúng nếu notify bị miss.
                 generateChallenge(currentChallenge, 16);
                 pChallengeCharacteristic->setValue(currentChallenge, 16);
+                // Chờ Tag ghi CCCD (đăng ký nhận notify).
+                vTaskDelay(pdMS_TO_TICKS(CHALLENGE_SEND_DELAY_MS));
+                // Kiểm tra lại sau delay — tránh trường hợp session mới bắt đầu trong lúc chờ.
+                if (myGen != (uint8_t)connectionGen) {
+                    Serial.printf("[BLE] Challenge gen=%u lỗi thời sau delay — không notify\n",
+                                  myGen);
+                    break;
+                }
                 pChallengeCharacteristic->notify();
+                printHex("[AUTH] Key:       ", pairingKey,       16);
+                printHex("[AUTH] Challenge:  ", currentChallenge, 16);
                 Serial.println("[BLE] Challenge sent");
                 break;
+            }
 
             case BLE_AUTH_VERIFY: {
-                // HMAC verify chạy ngay tại đây — không còn defer sang loop() nữa
-                // bleTask có stack 10KB — đủ cho mbedTLS
+                printHex("[AUTH] Key:       ", pairingKey,       16);
+                printHex("[AUTH] Challenge:  ", currentChallenge, 16);
+                printHex("[AUTH] Tag resp:   ", msg.data,         32);
                 uint8_t expected[32];
                 if (!computeHMAC(pairingKey, 16, currentChallenge, 16, expected)) {
                     Serial.println("[BLE] HMAC compute failed — disconnecting");
-                    BLEDevice::getServer()->disconnect(BLEDevice::getServer()->getConnId());
+                    pBleServer->disconnect(pBleServer->getConnId());
                     break;
                 }
+                printHex("[AUTH] Expected:   ", expected, 32);
                 if (memcmp(msg.data, expected, 32) == 0) {
                     authenticated = true;
                     xEventGroupSetBits(sysEvents, EVT_AUTHED);
@@ -817,7 +875,7 @@ static void bleTask(void* param) {
                     pAuthCharacteristic->setValue("AUTH_FAIL");
                     pAuthCharacteristic->notify();
                     vTaskDelay(pdMS_TO_TICKS(50));
-                    BLEDevice::getServer()->disconnect(BLEDevice::getServer()->getConnId());
+                    pBleServer->disconnect(pBleServer->getConnId());
                 }
                 break;
             }

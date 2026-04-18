@@ -19,7 +19,9 @@
 #define AUTH_CHAR_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHALLENGE_CHAR_UUID "ceb5483e-36e1-4688-b7f5-ea07361b26a9"
 
-// Delay before sending challenge (gives Tag time to subscribe to notifications)
+// Delay before sending challenge (gives Tag time to subscribe to notifications).
+// Android BLE stack + S3 service discovery takes ~1.2 s in practice;
+// 2000 ms gives comfortable margin so the notify arrives after CCCD is written.
 #define CHALLENGE_SEND_DELAY_MS (2000U)
 
 // ── Hardware pins ─────────────────────────────────────────────────────────────
