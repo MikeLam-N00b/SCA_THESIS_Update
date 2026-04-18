@@ -578,9 +578,12 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks {
             xQueueSend(uwbQueue, &cmd, pdMS_TO_TICKS(10));
             Serial.println("UWB: Tag beyond 20m");
         } else if (STARTS("TAG_UWB_READY")) {
-            if (xEventGroupGetBits(sysEvents) & EVT_AUTHED) {
+            bool authed = (xEventGroupGetBits(sysEvents) & EVT_AUTHED) != 0;
+            Serial.printf("[BLE] TAG_UWB_READY received — authed=%d\n", (int)authed);
+            if (authed) {
                 cmd = UWB_CMD_INIT;
-                xQueueSend(uwbQueue, &cmd, pdMS_TO_TICKS(10));
+                BaseType_t sent = xQueueSend(uwbQueue, &cmd, pdMS_TO_TICKS(10));
+                Serial.printf("[BLE] UWB_CMD_INIT queued=%d\n", (int)(sent == pdTRUE));
             }
         } else if (STARTS("ALERT:RELAY_ATTACK")) {
             Serial.println("SECURITY ALERT: Relay attack detected!");

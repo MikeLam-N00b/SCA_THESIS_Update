@@ -39,7 +39,6 @@ class UwbFragment : Fragment() {
         usbTransport = TransportHolder.transport ?: UsbTransport(requireContext())
 
         setupUI()
-        fetchKeyAndSend()
         listenForDistance()
 
         return binding.root

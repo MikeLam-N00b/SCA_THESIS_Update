@@ -11,6 +11,8 @@ import android.view.ViewGroup
 import android.view.animation.LinearInterpolator
 import android.widget.Toast
 import androidx.fragment.app.Fragment
+import android.content.Context
+import android.hardware.usb.UsbManager
 import com.example.uwb.R
 import com.example.uwb.databinding.FragmentPairingLoadingBinding
 import com.example.uwb.transport.TransportHolder
@@ -42,21 +44,38 @@ class PairingLoadingFragment : Fragment() {
         deviceMac  = arguments?.getString("DEVICE_MAC")
         deviceName = arguments?.getString("DEVICE_NAME")
 
-        val transport = TransportHolder.transport
-        if (transport == null) {
-            Toast.makeText(requireContext(), "Chưa kết nối USB với Tag", Toast.LENGTH_LONG).show()
-            parentFragmentManager.popBackStack()
-            return binding.root
+        val existingTransport = TransportHolder.transport
+        if (existingTransport != null) {
+            usbTransport = existingTransport
+            binding.tvDeviceName.text = deviceName ?: ""
+            binding.btnCancel.setOnClickListener { cancelAndGoBack() }
+            startCarAnimation()
+            sendConnectCommand()
+            startTimeout()
+            listenForResponse()
+        } else {
+            // BluetoothFragment bị bỏ qua (có savedMac) → tự kết nối USB
+            val newTransport = UsbTransport(requireContext())
+            val usbManager = requireContext().getSystemService(Context.USB_SERVICE) as UsbManager
+            val esp32 = usbManager.deviceList.values.find { it.vendorId == 0x303A }
+            if (esp32 == null) {
+                Toast.makeText(requireContext(), "Chưa thấy ESP32-S3 — hãy cắm cáp USB", Toast.LENGTH_LONG).show()
+                parentFragmentManager.popBackStack()
+                return binding.root
+            }
+            usbTransport = newTransport
+            binding.tvDeviceName.text = deviceName ?: ""
+            binding.btnCancel.setOnClickListener { cancelAndGoBack() }
+            startCarAnimation()
+            updateStatus("Đang kết nối USB...")
+            newTransport.openDevice(esp32) {
+                TransportHolder.transport = newTransport
+                usbTransport = newTransport
+                sendConnectCommand()
+                startTimeout()
+                listenForResponse()
+            }
         }
-        usbTransport = transport
-
-        binding.tvDeviceName.text = deviceName ?: ""
-        binding.btnCancel.setOnClickListener { cancelAndGoBack() }
-
-        startCarAnimation()
-        sendConnectCommand()
-        startTimeout()
-        listenForResponse()
 
         return binding.root
     }
@@ -131,7 +150,9 @@ class PairingLoadingFragment : Fragment() {
                             || line.startsWith("[BLE notify] AUTH_OK")
                             || line.startsWith("KEY_FORWARDED_TO_ANCHOR:") -> onPairingSuccess()
                         // Firmware đang chạy UWB rồi → vào thẳng UwbFragment
-                        line.contains("[uwbTask]")
+                        // Chỉ match khi UWB đang đo thực sự (có "avg="), KHÔNG match
+                        // "[uwbTask] started" hoặc "[uwbTask] UWB disabled" lúc khởi động
+                        (line.contains("[uwbTask]") && line.contains("avg="))
                             || line.startsWith("DISTANCE:")
                             || line.startsWith("UNLOCK:")          -> onPairingSuccess()
                         line.startsWith("NOT_FOUND:")              -> onPairingFailed("Không tìm thấy thiết bị")
