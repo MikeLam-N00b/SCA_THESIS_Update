@@ -24,8 +24,8 @@
 // CẤU HÌNH
 // =============================================================================
 #define simSerial   Serial2
-#define RX_PIN      6
-#define TX_PIN      7
+#define RX_PIN      5
+#define TX_PIN      6
 #define SIM_BAUD    115200
 
 #define APN         "v-internet"   // Viettel; Mobifone: "m-wap"; Vinaphone: "m3-world"

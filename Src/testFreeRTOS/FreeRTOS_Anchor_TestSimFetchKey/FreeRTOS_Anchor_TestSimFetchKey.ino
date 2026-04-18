@@ -207,25 +207,35 @@ static bool simAtOk(const char* cmd, unsigned long timeout_ms = 5000) {
 
 static bool simInit() {
     simSerial.begin(SIM_BAUD, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
-    Serial.println("[SIM] Cho module khoi dong (500ms)...");
-    vTaskDelay(pdMS_TO_TICKS(500));
+    Serial.println("[SIM] Cho module khoi dong (8s)...");
+    vTaskDelay(pdMS_TO_TICKS(8000));
     while (simSerial.available()) simSerial.read();
 
     bool ok = false;
     for (int i = 0; i < 5; i++) {
         if (simAtOk("AT")) { ok = true; break; }
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
     if (!ok) { Serial.println("[SIM] LOI: AT khong phan hoi"); return false; }
     simAtOk("ATE0");
 
+    // Kiểm tra SIM có sẵn sàng không
+    String cpin = simAtCmd("AT+CPIN?", "OK", 3000);
+    if (cpin.indexOf("READY") < 0) {
+        Serial.println("[SIM] LOI: SIM chua san sang (bi khoa PIN hoac khong co SIM)");
+        return false;
+    }
+
     Serial.println("[SIM] Cho dang ky mang...");
     unsigned long t = millis();
     bool netOk = false;
-    while (millis() - t < 30000) {
-        String r = simAtCmd("AT+CREG?", "OK", 3000);
+    while (millis() - t < 60000) {
+        // Thử CEREG (LTE) trước, fallback sang CREG (2G/3G)
+        String r = simAtCmd("AT+CEREG?", "OK", 3000);
         if (r.indexOf(",1") >= 0 || r.indexOf(",5") >= 0) { netOk = true; break; }
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        r = simAtCmd("AT+CREG?", "OK", 3000);
+        if (r.indexOf(",1") >= 0 || r.indexOf(",5") >= 0) { netOk = true; break; }
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
     if (!netOk) { Serial.println("[SIM] LOI: khong co mang"); return false; }
 

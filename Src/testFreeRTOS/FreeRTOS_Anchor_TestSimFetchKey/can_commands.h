@@ -22,7 +22,7 @@ private:
       frame.can_dlc = frames[i].dlc;
       memcpy(frame.data, frames[i].data, 8);
       if (mcp->sendMessage(&frame) != MCP2515::ERROR_OK) failed++;
-      delay(10);
+      delay(50);
     }
 
     if (failed == 0)

@@ -5,8 +5,8 @@
 // =============================================================================
 
 // ── SIM Module key provisioning ───────────────────────────────────────────────
-#define SIM_RX_PIN       (6)
-#define SIM_TX_PIN       (7)
+#define SIM_RX_PIN       (8)
+#define SIM_TX_PIN       (6)
 #define SIM_BAUD         (115200)
 #define SIM_APN          "v-internet"   // Viettel; Mobifone: "m-wap"; Vinaphone: "m3-world"
 #define VEHICLE_ID       "1HGBH41JXMN109186"
@@ -20,7 +20,7 @@
 #define CHALLENGE_CHAR_UUID "ceb5483e-36e1-4688-b7f5-ea07361b26a9"
 
 // Delay before sending challenge (gives Tag time to subscribe to notifications)
-#define CHALLENGE_SEND_DELAY_MS (200U)
+#define CHALLENGE_SEND_DELAY_MS (2000U)
 
 // ── Hardware pins ─────────────────────────────────────────────────────────────
 #define PIN_RST  (5)

@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
-nvs_clear.py — Xóa NVS partition trên ESP32 Anchor
-Namespace: "ble-keys" / Key: "bleKey"
+nvs_clear.py — Xóa NVS partition trên ESP32 (Anchor hoặc Tag)
+
+Anchor: xóa pairing key (bleKey) + BLE bonding cache → fetch key mới từ server
+Tag   : xóa BLE bonding cache → scan fresh, không tự reconnect Anchor cũ
 
 Yêu cầu: pip install esptool
-Dùng lệnh: python nvs_clear.py --port COM3
+Dùng lệnh:
+  python nvs_clear.py --port COM10              # Anchor (mặc định)
+  python nvs_clear.py --port COM11 --role tag   # Tag
+  python nvs_clear.py --port COM10 --port-tag COM11  # Cả hai cùng lúc
 """
 
 import argparse
@@ -22,52 +27,64 @@ def run(cmd: list[str]) -> int:
     return result.returncode
 
 
+def erase_nvs(port: str, baud: str, label: str) -> int:
+    print(f"[INFO] [{label}] Xóa NVS partition tại offset {NVS_OFFSET}, size {NVS_SIZE} ...")
+    rc = run([
+        sys.executable, "-m", "esptool",
+        "--port", port,
+        "--baud", baud,
+        "erase_region", NVS_OFFSET, NVS_SIZE,
+    ])
+    return rc
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Xóa NVS key trên ESP32 Anchor")
-    parser.add_argument("--port", "-p", default="COM3", help="Serial port (mặc định: COM3)")
-    parser.add_argument("--baud", "-b", default="921600", help="Baud rate (mặc định: 921600)")
-    parser.add_argument("--full", action="store_true",
-                        help="Xóa toàn bộ NVS partition (mặc định: chỉ xóa bleKey)")
+    parser = argparse.ArgumentParser(description="Xóa NVS trên ESP32 SCA (Anchor / Tag)")
+    parser.add_argument("--port", "-p", default="COM3",
+                        help="Serial port Anchor (mặc định: COM3)")
+    parser.add_argument("--port-tag", default=None,
+                        help="Serial port Tag (nếu muốn xóa cả Tag cùng lúc)")
+    parser.add_argument("--role", choices=["anchor", "tag", "both"], default="anchor",
+                        help="Thiết bị cần xóa: anchor | tag | both (mặc định: anchor)")
+    parser.add_argument("--baud", "-b", default="921600",
+                        help="Baud rate (mặc định: 921600)")
     args = parser.parse_args()
 
-    print("=" * 50)
-    print("  SCA NVS Key Eraser (Python)")
-    print("=" * 50)
-    print(f"Port  : {args.port}")
-    print(f"Mode  : {'Toàn bộ NVS partition' if args.full else 'Chỉ xóa key bleKey'}")
+    # Nếu dùng --port-tag thì tự hiểu là both
+    if args.port_tag and args.role == "anchor":
+        args.role = "both"
+
+    print("=" * 55)
+    print("  SCA NVS Eraser")
+    print("=" * 55)
+
+    targets = []
+    if args.role in ("anchor", "both"):
+        targets.append((args.port, "ANCHOR",
+                        "Khởi động lại Anchor → sẽ fetch key mới từ server."))
+    if args.role in ("tag", "both"):
+        tag_port = args.port_tag if args.port_tag else args.port
+        targets.append((tag_port, "TAG",
+                        "Khởi động lại Tag → scan fresh, không tự reconnect Anchor cũ."))
+
+    for port, label, ok_msg in targets:
+        print(f"\nPort  : {port}  [{label}]")
+
     print()
+    overall_ok = True
 
-    if args.full:
-        # Xóa toàn bộ NVS partition
-        print(f"[INFO] Xóa NVS partition tại offset {NVS_OFFSET}, size {NVS_SIZE} ...")
-        rc = run([
-            sys.executable, "-m", "esptool",
-            "--port", args.port,
-            "--baud", args.baud,
-            "erase_region", NVS_OFFSET, NVS_SIZE,
-        ])
-    else:
-        # Ghi file NVS CSV rỗng chỉ xóa key bleKey
-        # Dùng nvs_partition_gen để tạo binary NVS trống rồi flash
-        # Cách đơn giản nhất: erase_region toàn bộ NVS partition (cả 2 cách đều reset NVS)
-        print("[INFO] ESP32 không hỗ trợ xóa từng key qua esptool.")
-        print("[INFO] Thực hiện erase toàn bộ NVS partition...")
-        rc = run([
-            sys.executable, "-m", "esptool",
-            "--port", args.port,
-            "--baud", args.baud,
-            "erase_region", NVS_OFFSET, NVS_SIZE,
-        ])
+    for port, label, ok_msg in targets:
+        rc = erase_nvs(port, args.baud, label)
+        if rc == 0:
+            print(f"[OK]  [{label}] NVS đã xóa thành công!")
+            print(f"[OK]  {ok_msg}")
+        else:
+            print(f"[ERR] [{label}] esptool thất bại (exit code {rc})")
+            print( "      Kiểm tra lại port và driver CH340/CP210x.")
+            overall_ok = False
 
-    if rc == 0:
-        print()
-        print("[OK]  NVS đã xóa thành công!")
-        print("[OK]  Khởi động lại Anchor → sẽ fetch key mới từ server.")
-    else:
-        print()
-        print(f"[ERR] esptool thất bại (exit code {rc})")
-        print("      Kiểm tra lại port và driver CH340/CP210x.")
-        sys.exit(rc)
+    if not overall_ok:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
