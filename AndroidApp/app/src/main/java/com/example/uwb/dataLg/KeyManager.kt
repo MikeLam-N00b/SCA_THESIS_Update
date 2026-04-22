@@ -30,6 +30,17 @@ object KeyManager {
     fun init(context: Context) {
         prefs = context.applicationContext
             .getSharedPreferences("PairingKeys", Context.MODE_PRIVATE)
+        // Ưu tiên last_vin (được ghi bởi savePairingKey từ lần pair mới)
+        val lastVin = prefs?.getString("last_vin", null)
+        if (lastVin != null) {
+            loadPairingKey(lastVin)
+            return
+        }
+        // Fallback cho các lần pair cũ chưa có last_vin: quét tìm key_* đầu tiên
+        prefs?.all?.keys
+            ?.firstOrNull { it.startsWith("key_") }
+            ?.removePrefix("key_")
+            ?.let { vin -> loadPairingKey(vin) }
     }
 
     /** Lưu key vào memory VÀ SharedPreferences theo VIN. */
@@ -43,6 +54,7 @@ object KeyManager {
             ?.putString("key_$vId",  key.joinToString("") { "%02x".format(it) })
             ?.putString("pid_$vId",  pId)
             ?.putLong(  "ts_$vId",   timestamp)
+            ?.putString("last_vin",  vId)
             ?.apply()
 
         Log.d("KeyManager", "✓ Key saved for $vId: ${key.joinToString("") { "%02x".format(it) }}")
@@ -62,6 +74,7 @@ object KeyManager {
         pairingId  = prefs?.getString("pid_$vId", "") ?: ""
         pairingKey = bytes
         timestamp  = prefs?.getLong("ts_$vId", 0) ?: 0
+        prefs?.edit()?.putString("last_vin", vId)?.apply()
         Log.d("KeyManager", "✓ Key loaded from disk for $vId: $hex")
         return true
     }

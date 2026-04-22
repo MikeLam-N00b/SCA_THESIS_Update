@@ -32,13 +32,18 @@ class WelcomeFragment : Fragment() {
         session = SessionManager(requireContext())
 
         binding.btnOwpa.setOnClickListener {
-
             if (session.isLoggedIn()) {
                 goToEnterVIN()
             } else {
-                // Chưa login → sang LoginFragment
                 goToLogin()
             }
+        }
+
+        binding.btnFriendSharing.setOnClickListener {
+            requireActivity().supportFragmentManager.beginTransaction()
+                .replace(R.id.fragment_container, FriendSharingFragment())
+                .addToBackStack(null)
+                .commit()
         }
     }
 
