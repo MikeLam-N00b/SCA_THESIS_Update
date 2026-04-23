@@ -77,50 +77,44 @@ class UwbFragment : Fragment() {
         usbTransport.send(keyCmd.toByteArray())
 
         Log.d("UwbFragment", "Key sent to S3: $keyHex")
-        Toast.makeText(requireContext(), "✓ Đã gửi key cho S3", Toast.LENGTH_SHORT).show()
     }
 
-    /**
-     * Lắng nghe distance từ S3
-     */
     private fun listenForDistance() {
         usbTransport.receive { data ->
-            val response = String(data).trim()
-            Log.d("UwbFragment", "📥 S3: $response")
+            val lines = String(data).split('\n')
+            for (raw in lines) {
+                val response = raw.trim()
+                if (response.isEmpty()) continue
+                Log.d("UwbFragment", "📥 S3: $response")
 
-            when {
-                response.startsWith("KEY_FORWARDED_TO_ANCHOR:") -> {
-                    val forwardedKey = response.substring(24)
-                    Log.d("UwbFragment", "✓ Key forwarded to Anchor: $forwardedKey")
-                    requireActivity().runOnUiThread {
-                        Toast.makeText(
-                            requireContext(),
-                            "✓ Tag đã gửi key sang Anchor",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
-                response.startsWith("DISTANCE:") -> {
-                    val distanceStr = response.substring(9)
-                    try {
-                        val dist = distanceStr.toDouble()
+                when {
+                    response.startsWith("DISTANCE:") -> {
+                        val dist = response.substring(9).toDoubleOrNull() ?: continue
                         requireActivity().runOnUiThread {
                             distance = dist
                             binding.tvDistance.text = String.format("%.1f m", distance)
-
-                            // Tự động unlock nếu distance < 5m
-                            if (distance < 5.0 && isLocked) {
+                        }
+                    }
+                    response.startsWith("UNLOCK:") -> {
+                        Log.d("UwbFragment", "→ UNLOCK at $response")
+                        requireActivity().runOnUiThread {
+                            if (isLocked) {
                                 isLocked = false
                                 updateLockStatus()
-                                Toast.makeText(
-                                    requireContext(),
-                                    "✓ Distance < 5m → Mở khóa tự động",
-                                    Toast.LENGTH_SHORT
-                                ).show()
                             }
                         }
-                    } catch (e: Exception) {
-                        Log.e("UwbFragment", "Parse distance error: ${e.message}")
+                    }
+                    response.startsWith("LOCK:") -> {
+                        Log.d("UwbFragment", "→ LOCK at $response")
+                        requireActivity().runOnUiThread {
+                            if (!isLocked) {
+                                isLocked = true
+                                updateLockStatus()
+                            }
+                        }
+                    }
+                    response.startsWith("KEY_FORWARDED_TO_ANCHOR:") -> {
+                        Log.d("UwbFragment", "✓ Key forwarded to Anchor")
                     }
                 }
             }

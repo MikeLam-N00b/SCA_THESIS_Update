@@ -64,6 +64,8 @@ class UsbTransport(private val context: Context) : Transport {
         }
     }
 
+    val isConnected: Boolean get() = connected
+
     override fun connect() {
         // Không dùng — openDevice() đảm nhận
     }

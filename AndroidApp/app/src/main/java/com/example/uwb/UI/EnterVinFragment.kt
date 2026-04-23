@@ -60,7 +60,6 @@ class EnterVinFragment : Fragment() {
             android.util.Log.d("PairingKey", "║ VIN       : $vin")
             android.util.Log.d("PairingKey", "║ Key (hex) : $keyHex")
             android.util.Log.d("PairingKey", "╚══════════════════════════════════╝")
-            Toast.makeText(requireContext(), "✓ Key (cached): $keyHex", Toast.LENGTH_LONG).show()
             navigateAfterPairing(vin)
             return
         }
@@ -85,12 +84,6 @@ class EnterVinFragment : Fragment() {
                     pId = result.pairingId,
                     key = result.pairingKey
                 )
-
-                Toast.makeText(
-                    requireContext(),
-                    "✓ Key (new): $keyHex",
-                    Toast.LENGTH_LONG
-                ).show()
 
                 navigateAfterPairing(vin)
 

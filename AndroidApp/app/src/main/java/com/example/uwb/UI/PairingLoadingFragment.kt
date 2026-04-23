@@ -45,7 +45,7 @@ class PairingLoadingFragment : Fragment() {
         deviceName = arguments?.getString("DEVICE_NAME")
 
         val existingTransport = TransportHolder.transport
-        if (existingTransport != null) {
+        if (existingTransport != null && existingTransport.isConnected) {
             usbTransport = existingTransport
             binding.tvDeviceName.text = deviceName ?: ""
             binding.btnCancel.setOnClickListener { cancelAndGoBack() }
@@ -54,7 +54,8 @@ class PairingLoadingFragment : Fragment() {
             startTimeout()
             listenForResponse()
         } else {
-            // BluetoothFragment bị bỏ qua (có savedMac) → tự kết nối USB
+            // Transport missing or stale (disconnected) → open USB fresh
+            TransportHolder.transport = null
             val newTransport = UsbTransport(requireContext())
             val usbManager = requireContext().getSystemService(Context.USB_SERVICE) as UsbManager
             val esp32 = usbManager.deviceList.values.find { it.vendorId == 0x303A }
