@@ -18,6 +18,8 @@
 #include <mbedtls/ecdh.h>
 #include <mbedtls/gcm.h>
 #include <mbedtls/base64.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
 
 // =============================================================================
 // FreeRTOS IPC primitives
@@ -497,6 +499,166 @@ static bool fetchPairingKeyViaSim(char* keyHexOut) {
 }
 
 // =============================================================================
+// WiFi key provisioning
+// =============================================================================
+
+static bool wifiInit() {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
+    unsigned long t = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        Serial.print(".");
+    }
+    Serial.println();
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[WiFi] LOI: khong ket noi duoc");
+        return false;
+    }
+    Serial.println("[WiFi] Connected: " + WiFi.localIP().toString());
+    return true;
+}
+
+static String wifiHttpPost(const char* url, const char* body) {
+    HTTPClient http;
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    int code = http.POST(body);
+    if (code != 200) {
+        Serial.printf("[WiFi HTTP] Status: %d\n", code);
+        http.end();
+        return "";
+    }
+    String resp = http.getString();
+    http.end();
+    return resp;
+}
+
+// Giống fetchPairingKeyViaSim() nhưng dùng WiFi/HTTPClient thay AT commands
+static bool fetchPairingKeyViaWifi(char* keyHexOut) {
+    mbedtls_pk_context our_pk;
+    mbedtls_pk_init(&our_pk);
+    if (mbedtls_pk_setup(&our_pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0 ||
+        mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(our_pk),
+                            mbedtls_ctr_drbg_random, &ctr_drbg) != 0) {
+        Serial.println("[KEY] LOI: tao EC key");
+        mbedtls_pk_free(&our_pk); return false;
+    }
+
+    uint8_t pubder[128];
+    int pubder_len = mbedtls_pk_write_pubkey_der(&our_pk, pubder, sizeof(pubder));
+    if (pubder_len < 0) {
+        Serial.println("[KEY] LOI: export pubkey");
+        mbedtls_pk_free(&our_pk); return false;
+    }
+    char pubkey_b64[200]; size_t b64len;
+    if (mbedtls_base64_encode((uint8_t*)pubkey_b64, sizeof(pubkey_b64), &b64len,
+                              pubder + sizeof(pubder) - pubder_len, pubder_len) != 0) {
+        Serial.println("[KEY] LOI: base64 encode");
+        mbedtls_pk_free(&our_pk); return false;
+    }
+    pubkey_b64[b64len] = '\0';
+
+    char body[512];
+    {
+        StaticJsonDocument<384> req;
+        req["vehicle_id"]            = VEHICLE_ID;
+        req["client_public_key_b64"] = pubkey_b64;
+        serializeJson(req, body, sizeof(body));
+    }
+    String endpoint = String(SERVER_FALLBACK) + "/secure-check-pairing";
+    Serial.printf("[WiFi HTTP] POST %s\n", endpoint.c_str());
+    String respBody = wifiHttpPost(endpoint.c_str(), body);
+    if (respBody.length() == 0) {
+        Serial.println("[WiFi HTTP] LOI: khong nhan duoc response");
+        mbedtls_pk_free(&our_pk); return false;
+    }
+    Serial.println("[WiFi HTTP] Response: " + respBody.substring(0, 80));
+
+    StaticJsonDocument<768> resp;
+    if (deserializeJson(resp, respBody) != DeserializationError::Ok) {
+        Serial.println("[KEY] LOI: parse JSON response");
+        mbedtls_pk_free(&our_pk); return false;
+    }
+    const char* srv_pub_b64   = resp["server_public_key_b64"];
+    const char* encrypted_b64 = resp["encrypted_data_b64"];
+    const char* nonce_b64     = resp["nonce_b64"];
+    if (!srv_pub_b64 || !encrypted_b64 || !nonce_b64) {
+        Serial.println("[KEY] LOI: thieu truong JSON");
+        mbedtls_pk_free(&our_pk); return false;
+    }
+
+    uint8_t srv_pub_der[128]; size_t srv_pub_len;
+    uint8_t encrypted[256];   size_t enc_len;
+    uint8_t nonce[12];        size_t nonce_len;
+    if (mbedtls_base64_decode(srv_pub_der, sizeof(srv_pub_der), &srv_pub_len,
+                              (const uint8_t*)srv_pub_b64, strlen(srv_pub_b64)) != 0 ||
+        mbedtls_base64_decode(encrypted, sizeof(encrypted), &enc_len,
+                              (const uint8_t*)encrypted_b64, strlen(encrypted_b64)) != 0 ||
+        mbedtls_base64_decode(nonce, sizeof(nonce), &nonce_len,
+                              (const uint8_t*)nonce_b64, strlen(nonce_b64)) != 0 || nonce_len != 12) {
+        Serial.println("[KEY] LOI: base64 decode");
+        mbedtls_pk_free(&our_pk); return false;
+    }
+    if (enc_len < 17) {
+        Serial.println("[KEY] LOI: kich thuoc payload");
+        mbedtls_pk_free(&our_pk); return false;
+    }
+
+    mbedtls_pk_context srv_pk; mbedtls_pk_init(&srv_pk);
+    if (mbedtls_pk_parse_public_key(&srv_pk, srv_pub_der, srv_pub_len) != 0) {
+        Serial.println("[KEY] LOI: parse server pubkey");
+        mbedtls_pk_free(&our_pk); mbedtls_pk_free(&srv_pk); return false;
+    }
+    mbedtls_ecdh_context ecdh; mbedtls_ecdh_init(&ecdh);
+    if (mbedtls_ecdh_get_params(&ecdh, mbedtls_pk_ec(our_pk), MBEDTLS_ECDH_OURS)   != 0 ||
+        mbedtls_ecdh_get_params(&ecdh, mbedtls_pk_ec(srv_pk), MBEDTLS_ECDH_THEIRS) != 0) {
+        Serial.println("[KEY] LOI: ECDH setup");
+        mbedtls_ecdh_free(&ecdh); mbedtls_pk_free(&our_pk); mbedtls_pk_free(&srv_pk); return false;
+    }
+    uint8_t shared_secret[32]; size_t shared_len = 0;
+    if (mbedtls_ecdh_calc_secret(&ecdh, &shared_len, shared_secret, sizeof(shared_secret),
+                                 mbedtls_ctr_drbg_random, &ctr_drbg) != 0 || shared_len != 32) {
+        Serial.println("[KEY] LOI: ECDH calc secret");
+        mbedtls_ecdh_free(&ecdh); mbedtls_pk_free(&our_pk); mbedtls_pk_free(&srv_pk); return false;
+    }
+    mbedtls_ecdh_free(&ecdh); mbedtls_pk_free(&our_pk); mbedtls_pk_free(&srv_pk);
+
+    uint8_t kek[16];
+    if (!hkdfSha256(NULL, 0, shared_secret, 32,
+                    (const uint8_t*)"secure-check-kek", 16, kek, 16)) {
+        Serial.println("[KEY] LOI: HKDF"); return false;
+    }
+
+    size_t ct_len = enc_len - 16;
+    uint8_t plaintext[256] = {};
+    mbedtls_gcm_context gcm; mbedtls_gcm_init(&gcm);
+    if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, kek, 128) != 0 ||
+        mbedtls_gcm_auth_decrypt(&gcm, ct_len, nonce, 12,
+                                 NULL, 0, encrypted + ct_len, 16,
+                                 encrypted, plaintext) != 0) {
+        Serial.println("[KEY] LOI: AES-GCM decrypt");
+        mbedtls_gcm_free(&gcm); return false;
+    }
+    mbedtls_gcm_free(&gcm);
+    plaintext[ct_len] = '\0';
+
+    StaticJsonDocument<512> keyDoc;
+    if (deserializeJson(keyDoc, (char*)plaintext) != DeserializationError::Ok) {
+        Serial.println("[KEY] LOI: parse JSON plaintext"); return false;
+    }
+    if (!keyDoc["paired"].as<bool>()) {
+        Serial.printf("[KEY] Xe '%s' chua duoc dang ky\n", VEHICLE_ID); return false;
+    }
+    const char* keyHex = keyDoc["pairing_key"];
+    if (!keyHex || strlen(keyHex) != 32) {
+        Serial.println("[KEY] LOI: pairing_key khong hop le"); return false;
+    }
+    strncpy(keyHexOut, keyHex, 33);
+    return true;
+}
+
+// =============================================================================
 // CAN helpers
 // =============================================================================
 
@@ -668,21 +830,34 @@ static void startBLE() {
     Serial.println("BLE advertising: " + String(DEVICE_NAME));
 }
 
-// Đọc key từ NVS. Nếu chưa có → fetch qua SIM module → lưu NVS
+// Đọc key từ NVS. Nếu chưa có → fetch qua WiFi → lưu NVS
 static void executeMainFlow() {
     checkStoredKey();
 
     if (!hasKey) {
-        Serial.println("No key in NVS — fetching via SIM module...");
-        if (simInit()) {
-            char simKey[33];
-            if (fetchPairingKeyViaSim(simKey))
-                saveKeyToNVS(simKey);
+        // --- WiFi (đang dùng) ---
+        Serial.println("No key in NVS — fetching via WiFi...");
+        if (wifiInit()) {
+            char wifiKey[33];
+            if (fetchPairingKeyViaWifi(wifiKey))
+                saveKeyToNVS(wifiKey);
             else
-                Serial.println("[SIM] Failed to fetch pairing key — pair the vehicle first.");
+                Serial.println("[WiFi] Failed to fetch pairing key — pair the vehicle first.");
         } else {
-            Serial.println("[SIM] Module init failed — cannot fetch key.");
+            Serial.println("[WiFi] Connect failed — cannot fetch key.");
         }
+
+        // --- SIM (dự phòng — bỏ comment để dùng thay WiFi) ---
+        // if (simInit()) {
+        //     char simKey[33];
+        //     if (fetchPairingKeyViaSim(simKey))
+        //         saveKeyToNVS(simKey);
+        //     else
+        //         Serial.println("[SIM] Failed to fetch pairing key — pair the vehicle first.");
+        // } else {
+        //     Serial.println("[SIM] Module init failed — cannot fetch key.");
+        // }
+
         if (!hasKey) { Serial.println("No key — BLE not started."); return; }
     }
 
