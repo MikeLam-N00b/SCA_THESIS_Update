@@ -15,7 +15,20 @@
       "Bash(powershell.exe -Command \"arduino-cli version\")",
       "Bash(powershell.exe -Command \"Get-Command arduino-cli -ErrorAction SilentlyContinue; ls ''C:\\\\Users\\\\Hieu Le\\\\AppData\\\\Local\\\\Programs\\\\'' 2>$null; ls ''C:\\\\Program Files\\\\'' | Select-String -Pattern ''arduino'' -SimpleMatch -CaseSensitive:$false\")",
       "Bash(find 'C:/Users/Hieu Le/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2511' -name *.h -path */include/*.h)",
-      "Read(//c/Users/Hieu Le/Documents/Arduino/libraries/**)"
+      "Read(//c/Users/Hieu Le/Documents/Arduino/libraries/**)",
+      "Read(//c/Users/Hieu Le/.claude/plugins/**)",
+      "Bash(tasklist /FI \"IMAGENAME eq arduino*\")",
+      "Bash(tasklist /FI \"IMAGENAME eq java*\")"
     ]
+  },
+  "enabledPlugins": {
+    "engineering-skills@claude-code-skills": true,
+    "engineering-advanced-skills@claude-code-skills": true,
+    "product-skills@claude-code-skills": true,
+    "c-level-skills@claude-code-skills": true,
+    "pm-skills@claude-code-skills": true,
+    "ra-qm-skills@claude-code-skills": true,
+    "skill-security-auditor@claude-code-skills": true,
+    "fullstack-dev-skills@fullstack-dev-skills": true
   }
 }
