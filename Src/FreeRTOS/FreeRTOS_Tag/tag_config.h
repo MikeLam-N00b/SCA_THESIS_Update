@@ -45,3 +45,16 @@
 
 // ── Distance filter ───────────────────────────────────────────────────────────
 #define DIST_FILTER_SIZE (5)
+
+// ── Friend Sharing BLE UUIDs (must match Anchor) ─────────────────────────────
+#define FRIEND_SERVICE_UUID     "0000FACE-0000-1000-8000-00805F9B34FB"
+#define FRIEND_BUNDLE_CHAR_UUID "0000FA01-0000-1000-8000-00805F9B34FB"
+#define FRIEND_STATUS_CHAR_UUID "0000FA03-0000-1000-8000-00805F9B34FB"
+
+// ── Friend bundle wire format constants (matches Anchor friend_types.h) ───────
+#define BUNDLE_WIRE_HEADER_LEN  123
+#define BUNDLE_WIRE_MAX_LEN     195    // 123 header + 72 max DER sig
+#define FRIEND_ID_LEN           8
+#define VEHICLE_ID_MAX_LEN      32
+#define FRIEND_KEY_LEN          16
+#define ECDSA_SIG_DER_MAX       72

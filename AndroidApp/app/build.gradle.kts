@@ -52,6 +52,8 @@ dependencies {
     implementation("com.github.mik3y:usb-serial-for-android:3.6.0")
     implementation("com.google.zxing:core:3.5.2")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

@@ -4,27 +4,34 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.example.uwb.Bluetooth.BluetoothFragment
+import com.example.uwb.BuildConfig
 import com.example.uwb.R
+import com.example.uwb.crypto.EcdsaVerifier
 import com.example.uwb.databinding.FragmentFriendSharingBinding
 import com.example.uwb.dataLg.FriendShareEntry
 import com.example.uwb.dataLg.FriendShareStore
 import com.example.uwb.dataLg.KeyManager
+import com.example.uwb.dataLg.ServerPublicKeyStore
 import com.example.uwb.model.FriendShareRequest
 import com.example.uwb.network.ApiClient
+import com.google.gson.Gson
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatWriter
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -33,7 +40,8 @@ class FriendSharingFragment : Fragment() {
     private var _binding: FragmentFriendSharingBinding? = null
     private val binding get() = _binding!!
 
-    // ── ZXing scanner launcher ──────────────────────────────────────────────
+    private val ttlOptions = listOf(1 to "1 giờ", 8 to "8 giờ", 24 to "24 giờ", 72 to "72 giờ", 168 to "7 ngày")
+
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
         val url = result.contents ?: return@registerForActivityResult
         claimFromUrl(url)
@@ -51,11 +59,34 @@ class FriendSharingFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
+        setupTtlSpinner()
+
         binding.btnBack.setOnClickListener { parentFragmentManager.popBackStack() }
         binding.btnCreateShare.setOnClickListener { requestNewQr() }
         binding.btnNewQr.setOnClickListener { showEmptyState() }
         binding.btnScanQr.setOnClickListener { launchScanner() }
+        binding.btnManageShares.setOnClickListener { openManageShares() }
     }
+
+    override fun onResume() {
+        super.onResume()
+        binding.btnManageShares.visibility =
+            if (KeyManager.hasAnyOwnerKey()) View.VISIBLE else View.GONE
+    }
+
+    // ── TTL Spinner ─────────────────────────────────────────────────────────
+
+    private fun setupTtlSpinner() {
+        val spinnerAdapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_item,
+            ttlOptions.map { it.second }
+        ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        binding.spinnerTtl.adapter = spinnerAdapter
+        binding.spinnerTtl.setSelection(2) // Default: 24 giờ
+    }
+
+    private fun selectedTtlHours(): Int = ttlOptions[binding.spinnerTtl.selectedItemPosition].first
 
     // ── Tạo QR (chủ xe) ────────────────────────────────────────────────────
 
@@ -72,23 +103,37 @@ class FriendSharingFragment : Fragment() {
             return
         }
 
+        val ownerApiKey = KeyManager.getOwnerApiKeyForVin(vin) ?: ""
+        if (ownerApiKey.isEmpty()) {
+            Toast.makeText(requireContext(), "Chưa có owner key — hãy pair lại xe", Toast.LENGTH_LONG).show()
+            return
+        }
+
         setLoading(true)
         lifecycleScope.launch {
             try {
                 val response = ApiClient.api.createFriendShare(
-                    FriendShareRequest(vehicle_id = vin, friend_name = friendName, ttl_hours = 24)
+                    ownerApiKey,
+                    FriendShareRequest(
+                        vehicle_id = vin,
+                        friend_name = friendName,
+                        ttl_hours = selectedTtlHours()
+                    )
                 )
                 FriendShareStore.save(
                     requireContext(),
                     FriendShareEntry(
-                        friendId   = response.friend_id,
+                        friendId = response.friend_id,
                         friendName = friendName,
-                        claimUrl   = response.claim_url,
-                        expiresAt  = response.expires_at,
-                        vehicleId  = vin,
-                        createdAt  = java.time.Instant.now().toString()
+                        claimUrl = response.claim_url,
+                        expiresAt = response.expires_at,
+                        vehicleId = vin,
+                        createdAt = java.time.Instant.now().toString()
                     )
                 )
+                // Cache server signing key for future guest claim verifications (fire-and-forget)
+                prefetchServerPublicKey()
+
                 binding.ivQrCode.setImageBitmap(generateQrBitmap(response.claim_url, 800))
                 binding.tvExpiry.text = formatExpiry(response.expires_at)
                 showQrState()
@@ -96,6 +141,20 @@ class FriendSharingFragment : Fragment() {
                 Toast.makeText(requireContext(), "Không tạo được mã: ${e.message}", Toast.LENGTH_LONG).show()
             } finally {
                 setLoading(false)
+            }
+        }
+    }
+
+    // Fetch server pubkey và cache — không block UI, lỗi bị bỏ qua
+    private fun prefetchServerPublicKey() {
+        if (ServerPublicKeyStore.load(requireContext()) != null) return
+        lifecycleScope.launch {
+            try {
+                val resp = withContext(Dispatchers.IO) { ApiClient.api.getServerPublicKey() }
+                ServerPublicKeyStore.save(requireContext(), resp.server_public_key_b64)
+                Log.d("FriendSharing", "Server signing key cached")
+            } catch (e: Exception) {
+                Log.w("FriendSharing", "Could not prefetch server key: ${e.message}")
             }
         }
     }
@@ -123,17 +182,50 @@ class FriendSharingFragment : Fragment() {
         setLoading(true)
         lifecycleScope.launch {
             try {
-                val bundle = ApiClient.api.claimFriendShare(token)
+                val bundle = withContext(Dispatchers.IO) { ApiClient.api.claimFriendShare(token) }
 
-                // Lưu friend key vào KeyManager như pairing key bình thường
-                val keyBytes = ByteArray(bundle.friend_key_hex.length / 2) { i ->
-                    bundle.friend_key_hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+                // ── ECDSA verify ────────────────────────────────────────────
+                var pubKeyB64 = ServerPublicKeyStore.load(requireContext())
+
+                if (pubKeyB64 == null) {
+                    // Lazy fetch: chưa có cache → thử fetch ngay
+                    pubKeyB64 = try {
+                        withContext(Dispatchers.IO) {
+                            ApiClient.api.getServerPublicKey().server_public_key_b64
+                        }.also { ServerPublicKeyStore.save(requireContext(), it) }
+                    } catch (e: Exception) {
+                        Log.w("FriendSharing", "Server key fetch failed — skipping verify: ${e.message}")
+                        null
+                    }
                 }
-                KeyManager.savePairingKey(
-                    vId = bundle.vehicle_id,
-                    pId = bundle.friend_id,
-                    key = keyBytes
-                )
+
+                if (pubKeyB64 != null) {
+                    val valid = withContext(Dispatchers.Default) {
+                        EcdsaVerifier.verifyFriendBundle(bundle, pubKeyB64)
+                    }
+                    if (!valid) {
+                        Toast.makeText(
+                            requireContext(),
+                            "Mã QR không hợp lệ — chữ ký không khớp với server",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        if (BuildConfig.DEBUG) {
+                            Log.w("FriendSharing", "ECDSA verify FAILED for bundle ${bundle.friend_id}")
+                        }
+                        return@launch
+                    }
+                } else {
+                    // Không có pubkey + không fetch được → cảnh báo, vẫn lưu để Anchor verify sau
+                    Log.w("FriendSharing", "No server pubkey available — skipping local verify (Anchor will verify)")
+                }
+                // ───────────────────────────────────────────────────────────
+
+                val keyBytes = bundle.friend_key_hex.chunked(2)
+                    .map { it.toInt(16).toByte() }
+                    .toByteArray()
+
+                val bundleJson = Gson().toJson(bundle)
+                KeyManager.saveFriendBundle(bundle.vehicle_id, bundle.friend_id, keyBytes, bundleJson)
 
                 Toast.makeText(
                     requireContext(),
@@ -141,9 +233,16 @@ class FriendSharingFragment : Fragment() {
                     Toast.LENGTH_SHORT
                 ).show()
 
-                // Chuyển sang Bluetooth để kết nối xe
+                // Navigate to Bluetooth với bundle để USB provisioning
                 parentFragmentManager.beginTransaction()
-                    .replace(R.id.fragment_container, BluetoothFragment())
+                    .replace(
+                        R.id.fragment_container,
+                        BluetoothFragment().apply {
+                            arguments = Bundle().also {
+                                it.putString(BluetoothFragment.ARG_FRIEND_BUNDLE_JSON, bundleJson)
+                            }
+                        }
+                    )
                     .addToBackStack(null)
                     .commit()
 
@@ -153,6 +252,15 @@ class FriendSharingFragment : Fragment() {
                 setLoading(false)
             }
         }
+    }
+
+    // ── Quản lý chia sẻ ────────────────────────────────────────────────────
+
+    private fun openManageShares() {
+        parentFragmentManager.beginTransaction()
+            .replace(R.id.fragment_container, OwnerFriendListFragment())
+            .addToBackStack(null)
+            .commit()
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

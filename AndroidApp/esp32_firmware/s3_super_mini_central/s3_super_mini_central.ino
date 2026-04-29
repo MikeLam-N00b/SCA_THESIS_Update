@@ -1,31 +1,39 @@
 /**
  * ESP32-S3 Super Mini — BLE Central + UWB Tag  (FreeRTOS)
  * ─────────────────────────────────────────────────────────
- * Nguồn gốc: FreeRTOS_Tag.ino (merged vào s3_super_mini_central)
+ * Owner mode: Android gửi SET_KEY:<hex> → scan Anchor → HMAC auth → UWB ranging
+ * Friend mode: Android gửi SET_SERVER_PUBKEY / SET_TIME / SET_BUNDLE
+ *              → Tag verify ECDSA offline → connect Anchor friend service
+ *              → Anchor verify online → nhận binary status [accepted, reason]
  *
- * Nhận lệnh từ Android app qua USB Serial (115200 baud):
- *   "SET_KEY:<32 hex chars>\n"  → lưu pairing key, bắt đầu scan BLE
- *   "DISCONNECT\n"              → ngắt BLE
+ * USB Serial commands (115200 baud):
+ *   Owner mode:
+ *     "SET_KEY:<32 hex chars>\n"   → lưu pairing key, bắt đầu scan BLE
+ *     "DISCONNECT\n"               → ngắt BLE
+ *   Friend mode:
+ *     "SET_SERVER_PUBKEY <b64>\n"  → lưu server ECDSA public key vào NVS
+ *     "SET_TIME <epoch>\n"         → đặt RTC (cần cho ECDSA time check)
+ *     "SET_BUNDLE <b64json>\n"     → parse + verify + nạp friend bundle
  *
- * Gửi trạng thái về app:
- *   "READY"                          → khởi động xong, chờ key
- *   "KEY_OK:<hex>"                   → key hợp lệ, bắt đầu scan
+ * USB Serial responses:
+ *   "READY"                          → khởi động xong, chờ lệnh
+ *   "KEY_OK:<hex>"                   → owner key hợp lệ, bắt đầu scan
  *   "KEY_INVALID"                    → key sai format
- *   "SCANNING..."                    → đang quét BLE tìm Anchor
+ *   "SERVER_PUBKEY_OK"               → server pubkey đã lưu NVS
+ *   "SERVER_PUBKEY_ERR:<reason>"     → lỗi lưu pubkey
+ *   "TIME_OK"                        → RTC đã set
+ *   "BUNDLE_OK:<friend_id_hex>"      → bundle hợp lệ, bắt đầu connect friend
+ *   "BUNDLE_ERR:<reason>"            → bundle lỗi
+ *   "SCANNING..."                    → đang quét BLE
  *   "FOUND:<mac>"                    → tìm thấy Anchor
- *   "CONNECTED:<mac>"                → kết nối + auth thành công
+ *   "CONNECTED:<mac>"                → kết nối + auth thành công (owner)
  *   "KEY_FORWARDED_TO_ANCHOR:<hex>"  → key đã gửi tới Anchor
  *   "DISCONNECTED"                   → mất kết nối BLE
  *   "DISTANCE:<value>"               → khoảng cách UWB (m)
  *   "UNLOCK:<dist>m"                 → tag vào vùng mở khóa
  *   "LOCK:<dist>m"                   → tag ra khỏi vùng mở khóa
- *
- * Board   : ESP32-S3 Super Mini
- * LED     : GPIO 48
- * USB Mode: "Hardware CDC and JTAG"
- *
- * Thư viện cần cài thêm:
- *   - DW3000 Arduino library (cho UWB — bỏ qua nếu chưa có phần cứng)
+ *   "FRIEND_ACCESS_GRANTED"          → Anchor chấp nhận friend bundle
+ *   "FRIEND_ACCESS_DENIED"           → Anchor từ chối friend bundle
  */
 
 #include <Arduino.h>
@@ -34,6 +42,12 @@
 #include <BLEClient.h>
 #include <BLEAdvertisedDevice.h>
 #include <mbedtls/md.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/sha256.h>
+#include <mbedtls/base64.h>
+#include <Preferences.h>
+#include <ArduinoJson.h>
+#include <time.h>
 #include "tag_config.h"
 
 #include <SPI.h>
@@ -54,7 +68,7 @@ static EventGroupHandle_t sysEvents;
 #define EVT_UWB_INIT         (1 << 3)
 #define EVT_UWB_STOP         (1 << 4)
 #define EVT_DEVICE_FOUND     (1 << 5)
-#define EVT_KEY_SET          (1 << 6)   // app đã gửi SET_KEY thành công
+#define EVT_KEY_SET          (1 << 6)   // app đã gửi SET_KEY hoặc SET_BUNDLE thành công
 #define EVT_CHALLENGE_RCVD   (1 << 7)   // Anchor gửi challenge mới qua notify
 
 // Buffer nhận challenge qua notify — chỉ viết trong notifyCallback (Core 0)
@@ -75,8 +89,16 @@ static volatile bool tagInUnlockZone = false;
 static volatile bool uwbStoppedFar   = false;
 static          bool anchorUwbReady  = false;
 static volatile int  currentRssi     = 0;
-// Khi Anchor trả AUTH_FAIL → bleTask dừng scan, chờ SET_KEY mới từ app
-static volatile bool authFailed      = false;
+static volatile bool authFailed      = false;  // AUTH_FAIL → chờ SET_KEY mới
+
+// ── Friend mode ───────────────────────────────────────────────────────────────
+static volatile bool isFriendMode       = false;
+static uint8_t       friendKey[FRIEND_KEY_LEN] = {};
+static uint8_t       s_bundleWire[BUNDLE_WIRE_MAX_LEN] = {};
+static size_t        s_bundleWireLen    = 0;
+// Anchor gửi binary [0]=0 accepted / 1+ rejected, [1]=reason
+static volatile bool s_friendAccepted   = false;
+static volatile bool s_friendStatusRcvd = false;
 
 // =============================================================================
 // BLE handles
@@ -87,9 +109,11 @@ static BLEClient*               pClient               = nullptr;
 static BLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
 static BLERemoteCharacteristic* pChallengeChar        = nullptr;
 static BLERemoteCharacteristic* pAuthChar             = nullptr;
+static BLERemoteCharacteristic* pFriendBundleChar     = nullptr;
+static BLERemoteCharacteristic* pFriendStatusChar     = nullptr;
 
 static uint8_t pairingKey[16];
-static char    pairingKeyHex[33];  // hex string để báo về app
+static char    pairingKeyHex[33];
 
 // =============================================================================
 // UWB frame buffers (chỉ dùng khi UWB_ENABLED)
@@ -158,6 +182,175 @@ static void printHex(const char* label, const uint8_t* data, size_t length) {
         Serial.print(data[i], HEX);
     }
     Serial.println();
+}
+
+// =============================================================================
+// NVS helpers — friend mode
+// =============================================================================
+
+static void nvsSaveServerPubkey(const uint8_t* der, size_t len) {
+    Preferences p;
+    if (!p.begin("sca_tag", false)) return;
+    p.putBytes("srv_pub", der, len);
+    p.end();
+}
+
+static size_t nvsLoadServerPubkey(uint8_t* out, size_t maxLen) {
+    Preferences p;
+    if (!p.begin("sca_tag", true)) return 0;
+    size_t stored = p.getBytesLength("srv_pub");
+    if (stored == 0 || stored > maxLen) { p.end(); return 0; }
+    p.getBytes("srv_pub", out, stored);
+    p.end();
+    return stored;
+}
+
+static void nvsSaveBundleWire(const uint8_t* wire, size_t len) {
+    Preferences p;
+    if (!p.begin("sca_tag", false)) return;
+    p.putBytes("friend_wire", wire, len);
+    p.putUInt("friend_len", (uint32_t)len);
+    p.end();
+}
+
+static bool nvsLoadBundleWire() {
+    Preferences p;
+    if (!p.begin("sca_tag", true)) return false;
+    uint32_t len = p.getUInt("friend_len", 0);
+    if (len == 0 || len > BUNDLE_WIRE_MAX_LEN) { p.end(); return false; }
+    p.getBytes("friend_wire", s_bundleWire, len);
+    s_bundleWireLen = len;
+    p.end();
+    memcpy(friendKey, s_bundleWire + 41, FRIEND_KEY_LEN);
+    return true;
+}
+
+// =============================================================================
+// ECDSA verification — verify bundle signature offline
+// Canonical message: "v{ver}|{friend_id_hex}|{vehicle_id}|{friend_key_hex}|{issued_at}|{expires_at}|{perms}"
+// =============================================================================
+
+static bool verifyBundleEcdsa(int bundle_version, const char* friend_id_hex,
+                               const char* vehicle_id, const char* friend_key_hex,
+                               const char* issued_at, const char* expires_at,
+                               int permissions, const char* sig_b64) {
+    // Build canonical message
+    char msg[256];
+    snprintf(msg, sizeof(msg), "v%d|%s|%s|%s|%s|%s|%d",
+             bundle_version, friend_id_hex, vehicle_id,
+             friend_key_hex, issued_at, expires_at, permissions);
+
+    // SHA-256
+    uint8_t hash[32];
+    mbedtls_sha256((const unsigned char*)msg, strlen(msg), hash, 0);
+
+    // Load server public key from NVS
+    uint8_t pkDer[128];
+    size_t  pkLen = nvsLoadServerPubkey(pkDer, sizeof(pkDer));
+    if (pkLen == 0) {
+        Serial.println("[ECDSA] Server pubkey not in NVS — run SET_SERVER_PUBKEY first");
+        return false;
+    }
+
+    // Base64-decode DER signature
+    uint8_t sigDer[ECDSA_SIG_DER_MAX];
+    size_t  sigLen = 0;
+    if (mbedtls_base64_decode(sigDer, sizeof(sigDer), &sigLen,
+                              (const unsigned char*)sig_b64, strlen(sig_b64)) != 0) {
+        Serial.println("[ECDSA] Signature base64 decode failed");
+        return false;
+    }
+
+    // Verify
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    int ret = mbedtls_pk_parse_public_key(&pk, pkDer, pkLen);
+    if (ret != 0) {
+        Serial.printf("[ECDSA] pk_parse failed: -0x%04X\n", (unsigned)(-ret));
+        mbedtls_pk_free(&pk);
+        return false;
+    }
+    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, hash, 32, sigDer, sigLen);
+    mbedtls_pk_free(&pk);
+
+    if (ret != 0) {
+        Serial.printf("[ECDSA] Signature invalid: -0x%04X\n", (unsigned)(-ret));
+        return false;
+    }
+    return true;
+}
+
+// =============================================================================
+// processSetBundle — parse base64-JSON bundle, verify ECDSA, pack wire format
+// =============================================================================
+
+static void processSetBundle(const char* b64json) {
+    // Decode base64 → raw JSON
+    uint8_t jsonBuf[1024];
+    size_t  jsonLen = 0;
+    if (mbedtls_base64_decode(jsonBuf, sizeof(jsonBuf) - 1, &jsonLen,
+                              (const unsigned char*)b64json, strlen(b64json)) != 0) {
+        Serial.println("BUNDLE_ERR:decode_failed");
+        return;
+    }
+    jsonBuf[jsonLen] = '\0';
+
+    // Parse JSON
+    DynamicJsonDocument doc(1024);
+    if (deserializeJson(doc, (char*)jsonBuf) != DeserializationError::Ok) {
+        Serial.println("BUNDLE_ERR:json_failed");
+        return;
+    }
+
+    int         bundle_version = doc["bundle_version"] | 0;
+    const char* friend_id      = doc["friend_id"];       // hex string, 16 chars
+    const char* vehicle_id     = doc["vehicle_id"];
+    const char* friend_key_hex = doc["friend_key"];      // hex string, 32 chars
+    int         permissions    = doc["permissions"] | 0;
+    const char* issued_at      = doc["issued_at"];       // ISO 8601
+    const char* expires_at     = doc["expires_at"];
+    const char* sig_b64        = doc["issuer_sig_b64"];  // base64 DER
+
+    if (!friend_id || !vehicle_id || !friend_key_hex || !issued_at || !expires_at || !sig_b64) {
+        Serial.println("BUNDLE_ERR:missing_fields");
+        return;
+    }
+
+    // Verify ECDSA signature offline
+    if (!verifyBundleEcdsa(bundle_version, friend_id, vehicle_id, friend_key_hex,
+                            issued_at, expires_at, permissions, sig_b64)) {
+        Serial.println("BUNDLE_ERR:verify_failed");
+        return;
+    }
+
+    // Pack wire format (byte offsets match friend_token.h ft_parse_bundle_wire)
+    memset(s_bundleWire, 0, sizeof(s_bundleWire));
+    s_bundleWire[0] = (uint8_t)bundle_version;
+    hexStringToBytes(friend_id,      s_bundleWire + 1,   FRIEND_ID_LEN);
+    strncpy((char*)(s_bundleWire + 9),  vehicle_id,       VEHICLE_ID_MAX_LEN - 1);
+    hexStringToBytes(friend_key_hex, s_bundleWire + 41,  FRIEND_KEY_LEN);
+    memcpy(friendKey, s_bundleWire + 41, FRIEND_KEY_LEN);
+    s_bundleWire[57] = (uint8_t)permissions;
+    strncpy((char*)(s_bundleWire + 58), issued_at,   31);
+    strncpy((char*)(s_bundleWire + 90), expires_at,  31);
+
+    // Decode DER signature (already verified above, re-decode to pack)
+    uint8_t sigDer[ECDSA_SIG_DER_MAX];
+    size_t  sigLen = 0;
+    mbedtls_base64_decode(sigDer, sizeof(sigDer), &sigLen,
+                          (const unsigned char*)sig_b64, strlen(sig_b64));
+    s_bundleWire[122] = (uint8_t)sigLen;
+    memcpy(s_bundleWire + 123, sigDer, sigLen);
+    s_bundleWireLen = BUNDLE_WIRE_HEADER_LEN + sigLen;
+
+    // Save to NVS
+    nvsSaveBundleWire(s_bundleWire, s_bundleWireLen);
+
+    // Activate friend mode, unblock bleTask
+    isFriendMode = true;
+    xEventGroupSetBits(sysEvents, EVT_KEY_SET);
+
+    Serial.printf("BUNDLE_OK:%s\n", friend_id);
 }
 
 // =============================================================================
@@ -298,26 +491,26 @@ static bool uwbInitiatorLoop() {
         BleWriteMsg wm;
         wm.len = (uint8_t)snprintf(wm.data, sizeof(wm.data), "VERIFIED:%.1fm", filtDist);
         if (connected) xQueueSend(bleWriteQueue, &wm, 0);
-        Serial.printf("UNLOCK:%.1fm\n", filtDist);     // báo app
+        Serial.printf("UNLOCK:%.1fm\n", filtDist);
     } else if (shouldLock && tagInUnlockZone) {
         tagInUnlockZone = false;
         BleWriteMsg wm;
         wm.len = (uint8_t)snprintf(wm.data, sizeof(wm.data), "WARNING:%.1fm", filtDist);
         if (connected) xQueueSend(bleWriteQueue, &wm, 0);
-        Serial.printf("LOCK:%.1fm\n", filtDist);       // báo app
+        Serial.printf("LOCK:%.1fm\n", filtDist);
     }
 
     static unsigned long lastDistLog = 0;
     if (millis() - lastDistLog > 500) {
         lastDistLog = millis();
-        Serial.printf("DISTANCE:%.1f\n", filtDist);    // báo app mỗi 500ms
+        Serial.printf("DISTANCE:%.1f\n", filtDist);
     }
     return false;
 }
 #endif // UWB_ENABLED
 
 // =============================================================================
-// BLE notification + scan callbacks
+// BLE notification callback
 // =============================================================================
 
 static void notifyCallback(BLERemoteCharacteristic* pChar,
@@ -325,7 +518,6 @@ static void notifyCallback(BLERemoteCharacteristic* pChar,
     if (!pData || length == 0) return;
 
     if (pChar == pChallengeChar) {
-        // Challenge mới từ Anchor — lưu vào buffer và báo connectToServer()
         if (length == 16) {
             memcpy(receivedChallenge, pData, 16);
             xEventGroupSetBits(sysEvents, EVT_CHALLENGE_RCVD);
@@ -340,10 +532,9 @@ static void notifyCallback(BLERemoteCharacteristic* pChar,
         } else if (length == 9 && memcmp(pData, "AUTH_FAIL", 9) == 0) {
             authenticated = false;
             authFailed    = true;
-            // Xóa EVT_KEY_SET → bleTask sẽ chờ SET_KEY mới thay vì retry vô hạn
             xEventGroupClearBits(sysEvents, EVT_KEY_SET);
             Serial.println("[BLE notify] AUTH_FAIL");
-            Serial.println("AUTH_FAIL_BAD_KEY");  // báo app
+            Serial.println("AUTH_FAIL_BAD_KEY");
         }
     } else if (pChar == pRemoteCharacteristic) {
         if (length >= 10 && memcmp(pData, "UWB_ACTIVE", 10) == 0) {
@@ -351,8 +542,24 @@ static void notifyCallback(BLERemoteCharacteristic* pChar,
             xEventGroupSetBits(sysEvents, EVT_ANCHOR_UWB_READY);
             Serial.println("[BLE notify] UWB_ACTIVE");
         }
+    } else if (pChar == pFriendStatusChar) {
+        // Anchor gửi binary payload: [0]=0 accepted / !=0 rejected, [1]=reason
+        if (pData[0] == 0) {
+            s_friendAccepted   = true;
+            s_friendStatusRcvd = true;
+            Serial.println("[Friend] FRIEND_OK — access granted");
+        } else {
+            s_friendAccepted   = false;
+            s_friendStatusRcvd = true;
+            uint8_t reason = (length >= 2) ? pData[1] : 0xFF;
+            Serial.printf("[Friend] FRIEND_FAIL reason=%u\n", reason);
+        }
     }
 }
+
+// =============================================================================
+// BLE scan callbacks
+// =============================================================================
 
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) override {
@@ -377,6 +584,21 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
     }
 };
 
+// Scan callback cho friend mode — tìm FRIEND_SERVICE_UUID thay vì SERVICE_UUID
+class FriendAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
+    void onResult(BLEAdvertisedDevice advertisedDevice) override {
+        if (!advertisedDevice.haveServiceUUID() ||
+            !advertisedDevice.isAdvertisingService(BLEUUID(FRIEND_SERVICE_UUID))) return;
+
+        Serial.printf("[Friend scan] Anchor: %s\n",
+                      advertisedDevice.getAddress().toString().c_str());
+        delete myDevice;
+        myDevice = new BLEAdvertisedDevice(advertisedDevice);
+        BLEDevice::getScan()->stop();
+        xEventGroupSetBits(sysEvents, EVT_DEVICE_FOUND);
+    }
+};
+
 class MyClientCallback : public BLEClientCallbacks {
     void onConnect(BLEClient* pclient) override {
         connected = true;
@@ -393,8 +615,12 @@ class MyClientCallback : public BLEClientCallbacks {
         pRemoteCharacteristic = nullptr;
         pChallengeChar        = nullptr;
         pAuthChar             = nullptr;
+        pFriendBundleChar     = nullptr;
+        pFriendStatusChar     = nullptr;
         xEventGroupClearBits(sysEvents, EVT_CONNECTED | EVT_AUTHED | EVT_ANCHOR_UWB_READY | EVT_UWB_INIT);
         xEventGroupSetBits(sysEvents, EVT_UWB_STOP);
+        // Unblock connectAsFriend() wait loop nếu đang chờ
+        if (isFriendMode) s_friendStatusRcvd = true;
         digitalWrite(LED_PIN, LOW);
         Serial.println("DISCONNECTED");
     }
@@ -402,7 +628,7 @@ class MyClientCallback : public BLEClientCallbacks {
 static MyClientCallback clientCallback;
 
 // =============================================================================
-// connectToServer — BLE connect + HMAC challenge-response
+// connectToServer — owner mode: BLE connect + HMAC challenge-response
 // =============================================================================
 
 static bool connectToServer() {
@@ -438,18 +664,11 @@ static bool connectToServer() {
     if (pRemoteCharacteristic->canNotify())
         pRemoteCharacteristic->registerForNotify(notifyCallback);
 
-    // ── HMAC challenge-response (bỏ qua nếu Anchor không có auth chars) ────
     bool hasAuth = (pChallengeChar != nullptr && pAuthChar != nullptr);
     if (hasAuth) {
         if (pAuthChar->canNotify())      pAuthChar->registerForNotify(notifyCallback);
-        // Đăng ký notify cho challenge: Anchor gọi notify() khi set challenge mới.
-        // KHÔNG dùng readValue() vì sẽ đọc challenge CŨ từ session trước → AUTH_FAIL.
         if (pChallengeChar->canNotify()) pChallengeChar->registerForNotify(notifyCallback);
 
-        // Chờ challenge qua notify (timeout 3s).
-        // Notify có thể bị miss nếu Tag đăng ký xong sau khi Anchor đã gửi notify.
-        // Fallback: đọc readValue() — an toàn vì Anchor đã generate challenge mới
-        // trong session này (setValue + notify trong loop()), không phải giá trị session cũ.
         xEventGroupClearBits(sysEvents, EVT_CHALLENGE_RCVD);
         EventBits_t bits = xEventGroupWaitBits(sysEvents, EVT_CHALLENGE_RCVD,
                                                pdFALSE, pdFALSE, pdMS_TO_TICKS(3000));
@@ -467,13 +686,13 @@ static bool connectToServer() {
         }
 
         uint8_t response[32];
-        printHex("[AUTH] Key:       ", pairingKey,       16);
+        printHex("[AUTH] Key:       ", pairingKey,        16);
         printHex("[AUTH] Challenge:  ", receivedChallenge, 16);
         if (!computeHMAC(pairingKey, 16, receivedChallenge, 16, response)) {
             pClient->disconnect(); return false;
         }
         printHex("[AUTH] HMAC resp:  ", response, 32);
-        pAuthChar->writeValue(response, 32, true);  // true = WRITE_WITH_RESPONSE, anchor dùng PROPERTY_WRITE
+        pAuthChar->writeValue(response, 32, true);
         Serial.println("[bleTask] HMAC response sent");
 
         xEventGroupWaitBits(sysEvents, EVT_AUTHED, pdFALSE, pdFALSE, pdMS_TO_TICKS(2000));
@@ -483,8 +702,6 @@ static bool connectToServer() {
                 authenticated = true;
                 xEventGroupSetBits(sysEvents, EVT_AUTHED);
             } else {
-                // Notify AUTH_FAIL có thể không tới kịp trước khi anchor disconnect.
-                // Đọc trực tiếp giá trị characteristic để xác nhận lý do thất bại.
                 if (authRaw == "AUTH_FAIL") {
                     authFailed = true;
                     xEventGroupClearBits(sysEvents, EVT_KEY_SET);
@@ -495,7 +712,6 @@ static bool connectToServer() {
             }
         }
     } else {
-        // Anchor không có HMAC — gửi key trực tiếp (backward compat)
         pRemoteCharacteristic->writeValue((uint8_t*)pairingKeyHex, 32, true);
         Serial.printf("KEY_FORWARDED_TO_ANCHOR:%s\n", pairingKeyHex);
         authenticated = true;
@@ -503,7 +719,7 @@ static bool connectToServer() {
     }
 
     Serial.printf("CONNECTED:%s\n", myDevice->getAddress().toString().c_str());
-    digitalWrite(LED_PIN, HIGH);   // LED sáng khi đã kết nối + auth
+    digitalWrite(LED_PIN, HIGH);
     return true;
 }
 
@@ -513,7 +729,7 @@ static bool connectToServer() {
 
 static bool armUWB(const char* label) {
 #if !UWB_ENABLED
-    return true;  // bỏ qua khi không có phần cứng UWB
+    return true;
 #endif
     anchorUwbReady = false;
     xEventGroupClearBits(sysEvents, EVT_ANCHOR_UWB_READY | EVT_UWB_INIT);
@@ -534,8 +750,100 @@ static bool armUWB(const char* label) {
 }
 
 // =============================================================================
+// connectAsFriend — friend mode: scan FRIEND_SERVICE_UUID, submit bundle, chờ status
+// =============================================================================
+
+static void connectAsFriend() {
+    if (s_bundleWireLen == 0) {
+        Serial.println("[Friend] No bundle in memory — aborting");
+        return;
+    }
+
+    BLEScan* pScan = BLEDevice::getScan();
+    pScan->setAdvertisedDeviceCallbacks(new FriendAdvertisedDeviceCallbacks());
+    pScan->setActiveScan(true);
+    pScan->setInterval(100U);
+    pScan->setWindow(80U);
+
+    for (;;) {
+        // Scan for Anchor broadcasting FRIEND_SERVICE_UUID
+        Serial.println("[Friend] Scanning for Anchor...");
+        xEventGroupClearBits(sysEvents, EVT_DEVICE_FOUND);
+        do {
+            pScan->clearResults();
+            pScan->start(10, false);
+        } while (!(xEventGroupGetBits(sysEvents) & EVT_DEVICE_FOUND));
+
+        // Connect
+        if (pClient) { delete pClient; pClient = nullptr; }
+        pClient = BLEDevice::createClient();
+        pClient->setClientCallbacks(&clientCallback);
+        pClient->setMTU(517);
+
+        if (!pClient->connect(myDevice)) {
+            Serial.println("[Friend] Connect failed — retry");
+            delete pClient; pClient = nullptr;
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        BLERemoteService* pSvc = pClient->getService(FRIEND_SERVICE_UUID);
+        if (!pSvc) {
+            Serial.println("[Friend] Friend service not found on Anchor");
+            pClient->disconnect();
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+
+        pFriendBundleChar = pSvc->getCharacteristic(FRIEND_BUNDLE_CHAR_UUID);
+        pFriendStatusChar = pSvc->getCharacteristic(FRIEND_STATUS_CHAR_UUID);
+
+        if (!pFriendBundleChar || !pFriendStatusChar) {
+            Serial.println("[Friend] Bundle/Status characteristics not found");
+            pClient->disconnect();
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+
+        // Register CCCD notify on status char
+        s_friendStatusRcvd = false;
+        s_friendAccepted   = false;
+        if (pFriendStatusChar->canNotify())
+            pFriendStatusChar->registerForNotify(notifyCallback);
+
+        // Write binary bundle to Anchor
+        pFriendBundleChar->writeValue(s_bundleWire, s_bundleWireLen, true);
+        Serial.printf("[Friend] Bundle written (%u bytes) — waiting for status...\n",
+                      (unsigned)s_bundleWireLen);
+
+        // Wait up to 10s for Anchor to verify + notify
+        unsigned long t0 = millis();
+        while (!s_friendStatusRcvd && (millis() - t0) < 10000UL)
+            vTaskDelay(pdMS_TO_TICKS(100));
+
+        if (!s_friendStatusRcvd) {
+            Serial.println("[Friend] Timeout waiting for status — retry");
+            if (connected) pClient->disconnect();
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+
+        // Report result
+        if (s_friendAccepted) {
+            Serial.println("FRIEND_ACCESS_GRANTED");
+            digitalWrite(LED_PIN, HIGH);
+        } else {
+            Serial.println("FRIEND_ACCESS_DENIED");
+        }
+
+        if (connected) pClient->disconnect();
+        break;
+    }
+}
+
+// =============================================================================
 // TASK: usbSerialTask — Core 0, Priority 2
-// Đọc lệnh từ Android app qua USB Serial
 // =============================================================================
 
 static void usbSerialTask(void* param) {
@@ -547,6 +855,7 @@ static void usbSerialTask(void* param) {
                 buf.trim();
                 if (buf.length() == 0) { buf = ""; continue; }
 
+                // ── Owner mode commands ──────────────────────────────────────
                 if (buf.startsWith("SET_KEY:")) {
                     String hex = buf.substring(8);
                     Serial.printf("DBG_KEY:[%s] len=%d\n", hex.c_str(), hex.length());
@@ -554,11 +863,11 @@ static void usbSerialTask(void* param) {
                         hexStringToBytes(hex.c_str(), pairingKey, 16);
                         memcpy(pairingKeyHex, hex.c_str(), 32);
                         pairingKeyHex[32] = '\0';
-                        authFailed = false;  // reset: key mới → cho phép scan lại
+                        authFailed   = false;
+                        isFriendMode = false;
                         printHex("[USB] Key: ", pairingKey, 16);
                         Serial.printf("KEY_OK:%s\n", pairingKeyHex);
                         xEventGroupSetBits(sysEvents, EVT_KEY_SET);
-                        // Nếu đang kết nối mà chưa forward key, gửi ngay
                         if (connected && pRemoteCharacteristic && !authenticated) {
                             pRemoteCharacteristic->writeValue(
                                 (uint8_t*)pairingKeyHex, 32, true);
@@ -573,10 +882,37 @@ static void usbSerialTask(void* param) {
                         pClient->disconnect();
                         Serial.println("DISCONNECTED");
                     }
+
+                // ── Friend mode commands ─────────────────────────────────────
+                } else if (buf.startsWith("SET_SERVER_PUBKEY ")) {
+                    String b64 = buf.substring(18);
+                    uint8_t der[128];
+                    size_t  derLen = 0;
+                    if (mbedtls_base64_decode(der, sizeof(der), &derLen,
+                                             (const unsigned char*)b64.c_str(),
+                                             b64.length()) != 0) {
+                        Serial.println("SERVER_PUBKEY_ERR:decode_failed");
+                    } else {
+                        nvsSaveServerPubkey(der, derLen);
+                        Serial.println("SERVER_PUBKEY_OK");
+                    }
+
+                } else if (buf.startsWith("SET_TIME ")) {
+                    uint32_t epoch = (uint32_t)buf.substring(9).toInt();
+                    struct timeval tv = { .tv_sec = (time_t)epoch, .tv_usec = 0 };
+                    settimeofday(&tv, nullptr);
+                    setenv("TZ", "UTC0", 1);
+                    tzset();
+                    Serial.println("TIME_OK");
+
+                } else if (buf.startsWith("SET_BUNDLE ")) {
+                    String b64 = buf.substring(11);
+                    processSetBundle(b64.c_str());
                 }
+
                 buf = "";
             } else {
-                if (buf.length() < 64) buf += c;
+                if (buf.length() < 256) buf += c;
             }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -589,11 +925,20 @@ static void usbSerialTask(void* param) {
 
 static void bleTask(void* param) {
     Serial.printf("[bleTask] started on core %d\n", xPortGetCoreID());
-
-    // Chờ app gửi SET_KEY trước khi scan
-    Serial.println("[bleTask] Waiting for SET_KEY from app...");
+    Serial.println("[bleTask] Waiting for key or bundle...");
     xEventGroupWaitBits(sysEvents, EVT_KEY_SET, pdFALSE, pdFALSE, portMAX_DELAY);
-    Serial.println("[bleTask] Key ready — starting BLE scan");
+
+    // ── Friend mode branch ────────────────────────────────────────────────────
+    if (isFriendMode) {
+        Serial.println("[bleTask] Friend mode — connecting to Anchor as friend");
+        connectAsFriend();
+        Serial.println("[bleTask] Friend flow complete — idle");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // ── Owner mode ────────────────────────────────────────────────────────────
+    Serial.println("[bleTask] Owner mode — starting BLE scan");
 
     BLEScan* pBLEScan = BLEDevice::getScan();
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
@@ -602,7 +947,6 @@ static void bleTask(void* param) {
     pBLEScan->setWindow(80U);
 
     for (;;) {
-        // ── SCAN ──────────────────────────────────────────────────────────────
         Serial.println("SCANNING...");
         xEventGroupClearBits(sysEvents, EVT_DEVICE_FOUND);
         do {
@@ -610,10 +954,8 @@ static void bleTask(void* param) {
             pBLEScan->start(10, false);
         } while (!(xEventGroupGetBits(sysEvents) & EVT_DEVICE_FOUND));
 
-        // ── CONNECT + AUTH ─────────────────────────────────────────────────────
         if (!connectToServer()) {
             if (authFailed) {
-                // Key sai → không retry, chờ SET_KEY mới từ app
                 authFailed = false;
                 Serial.println("[bleTask] Bad key — waiting for new SET_KEY from app...");
                 xEventGroupWaitBits(sysEvents, EVT_KEY_SET, pdFALSE, pdFALSE, portMAX_DELAY);
@@ -625,10 +967,8 @@ static void bleTask(void* param) {
             continue;
         }
 
-        // ── ARM UWB ────────────────────────────────────────────────────────────
         armUWB("arm");
 
-        // ── MONITOR LOOP ───────────────────────────────────────────────────────
         while (connected) {
             BleWriteMsg wm;
             while (xQueueReceive(bleWriteQueue, &wm, 0) == pdTRUE) {
@@ -658,11 +998,17 @@ static void bleTask(void* param) {
 }
 
 // =============================================================================
-// TASK: uwbTask — Core 1, Priority 4  (no-op khi UWB_ENABLED = 0)
+// TASK: uwbTask — Core 1, Priority 4  (no-op khi UWB_ENABLED = 0 hoặc friend mode)
 // =============================================================================
 
 static void uwbTask(void* param) {
     Serial.printf("[uwbTask] started on core %d\n", xPortGetCoreID());
+
+    if (isFriendMode) {
+        Serial.println("[uwbTask] Friend mode — UWB not used");
+        vTaskDelete(NULL);
+        return;
+    }
 
 #if !UWB_ENABLED
     Serial.println("[uwbTask] UWB disabled — task idle");
@@ -705,12 +1051,10 @@ void setup() {
     if (reason == ESP_RST_PANIC)
         Serial.println("WARNING: previous reset was a CRASH");
 
-    // Hold DW3000 in reset (nếu có) trong lúc BLE init
     pinMode(PIN_RST, OUTPUT); digitalWrite(PIN_RST, LOW);
     pinMode(PIN_SS,  OUTPUT); digitalWrite(PIN_SS,  HIGH);
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    // LED init SAU BLE để BLE không reconfigure GPIO 48
     BLEDevice::init("UserTag_01");
     BLEDevice::setPower(ESP_PWR_LVL_P9);
     pinMode(LED_PIN, OUTPUT);
@@ -724,8 +1068,15 @@ void setup() {
         while (1);
     }
 
-    // Tạo tasks, pin vào đúng core
-    xTaskCreatePinnedToCore(usbSerialTask, "USB_Task", 4096,  NULL, 2, NULL, 0);
+    // Load friend bundle from NVS nếu đã được provisioned trước đó
+    if (nvsLoadBundleWire()) {
+        isFriendMode = true;
+        xEventGroupSetBits(sysEvents, EVT_KEY_SET);
+        Serial.printf("[setup] Friend bundle loaded from NVS (%u bytes)\n",
+                      (unsigned)s_bundleWireLen);
+    }
+
+    xTaskCreatePinnedToCore(usbSerialTask, "USB_Task", 8192,  NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(bleTask,       "BLE_Task", 10240, NULL, 3, NULL, 0);
     xTaskCreatePinnedToCore(uwbTask,       "UWB_Task", 8192,  NULL, 4, NULL, 1);
 
@@ -734,5 +1085,5 @@ void setup() {
 }
 
 void loop() {
-    vTaskDelete(NULL);  // loop() không dùng trong FreeRTOS mode
+    vTaskDelete(NULL);
 }

@@ -98,7 +98,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Tạo mã QR để bạn bè quét và\nlấy quyền truy cập xe trong 24 giờ"
+                    android:text="Tạo mã QR để bạn bè quét và\nlấy quyền truy cập xe"
                     android:textSize="14sp"
                     android:textColor="@color/text_secondary"
                     android:gravity="center"
@@ -120,6 +120,28 @@
                         android:maxLines="1"
                         android:imeOptions="actionDone" />
                 </com.google.android.material.textfield.TextInputLayout>
+
+                <!-- TTL selector -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Thời hạn: "
+                        android:textSize="14sp"
+                        android:textColor="#212121" />
+
+                    <Spinner
+                        android:id="@+id/spinnerTtl"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1" />
+                </LinearLayout>
 
                 <com.google.android.material.card.MaterialCardView
                     android:id="@+id/btnCreateShare"
@@ -213,6 +235,28 @@
                             android:textColor="#BBDEFB"
                             android:layout_marginTop="2dp" />
                     </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Manage shares button — chỉ hiện với Owner -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/btnManageShares"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    app:cardCornerRadius="16dp"
+                    app:cardElevation="2dp"
+                    app:cardBackgroundColor="#F3E5F5"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Quản lý chia sẻ xe"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:textColor="#7B1FA2"
+                        android:gravity="center"
+                        android:paddingVertical="14dp" />
                 </com.google.android.material.card.MaterialCardView>
 
             </LinearLayout>

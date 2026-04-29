@@ -64,6 +64,8 @@ class EnterVinFragment : Fragment() {
             return
         }
 
+        binding.btnConfirm.isEnabled = false
+
         lifecycleScope.launch {
 
             try {
@@ -84,20 +86,25 @@ class EnterVinFragment : Fragment() {
                     pId = result.pairingId,
                     key = result.pairingKey
                 )
+                if (result.ownerApiKey.isNotEmpty()) {
+                    KeyManager.saveOwnerApiKey(vin, result.ownerApiKey)
+                }
 
                 navigateAfterPairing(vin)
 
             } catch (e: javax.crypto.AEADBadTagException) {
                 android.util.Log.e("EnterVin", "AES-GCM decrypt failed — key mismatch", e)
-                binding.edtVin.error = null
+                binding.btnConfirm.isEnabled = true
+                binding.edtVin.error = "Lỗi giải mã — thử lại"
                 Toast.makeText(requireContext(),
                     "Lỗi giải mã server: kiểm tra kết nối và thử lại",
                     Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 android.util.Log.e("EnterVin", "pairVehicle failed", e)
-                binding.edtVin.error = null
+                binding.btnConfirm.isEnabled = true
+                binding.edtVin.error = "Kết nối thất bại — thử lại"
                 Toast.makeText(requireContext(),
-                    "Lỗi: ${e.message?.take(80)}",
+                    "Lỗi: ${e.message?.take(120)}",
                     Toast.LENGTH_LONG).show()
             }
         }
@@ -123,11 +130,11 @@ class EnterVinFragment : Fragment() {
             fm.beginTransaction()
                 .replace(com.example.uwb.R.id.fragment_container, pairingFragment)
                 .addToBackStack(null)
-                .commit()
+                .commitAllowingStateLoss()
         } else {
             fm.beginTransaction()
                 .replace(com.example.uwb.R.id.fragment_container, BluetoothFragment())
-                .commit()
+                .commitAllowingStateLoss()
         }
     }
 

@@ -58,3 +58,20 @@
 // Feature flags
 // =============================================================================
 #define UWB_ENABLED 1   // set to 0 to run BLE-only (no DW3000 hardware needed)
+
+// =============================================================================
+// Friend Sharing — BLE UUIDs (phải khớp với Anchor firmware anchor_config.h)
+// =============================================================================
+#define FRIEND_SERVICE_UUID     "0000FACE-0000-1000-8000-00805F9B34FB"
+#define FRIEND_BUNDLE_CHAR_UUID "0000FA01-0000-1000-8000-00805F9B34FB"
+#define FRIEND_STATUS_CHAR_UUID "0000FA03-0000-1000-8000-00805F9B34FB"
+
+// =============================================================================
+// Friend Sharing — wire format constants (phải khớp với friend_types.h của Anchor)
+// =============================================================================
+#define FRIEND_ID_LEN           8     // bytes (16 hex chars)
+#define VEHICLE_ID_MAX_LEN      32    // bytes including null terminator
+#define FRIEND_KEY_LEN          16    // bytes
+#define ECDSA_SIG_DER_MAX       72    // P-256 DER max 72 bytes
+#define BUNDLE_WIRE_HEADER_LEN  123   // bytes before signature field
+#define BUNDLE_WIRE_MAX_LEN     (BUNDLE_WIRE_HEADER_LEN + ECDSA_SIG_DER_MAX)

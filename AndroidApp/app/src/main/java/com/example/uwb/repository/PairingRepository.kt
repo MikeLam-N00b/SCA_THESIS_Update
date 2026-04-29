@@ -15,7 +15,8 @@ import javax.crypto.KeyAgreement
 
 data class PairingResult(
     val pairingId: String,
-    val pairingKey: ByteArray
+    val pairingKey: ByteArray,
+    val ownerApiKey: String
 )
 
 class PairingRepository {
@@ -63,7 +64,8 @@ class PairingRepository {
 
         PairingResult(
             pairingId = resp.pairing_id,
-            pairingKey = pairingKey
+            pairingKey = pairingKey,
+            ownerApiKey = resp.owner_api_key ?: ""
         )
     }
 

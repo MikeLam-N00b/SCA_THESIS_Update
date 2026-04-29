@@ -13,19 +13,32 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
+import android.util.Log
 import android.view.*
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityCompat
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
 import com.example.uwb.databinding.FragmentBluetoothBinding
+import com.example.uwb.dataLg.ServerPublicKeyStore
 import com.example.uwb.transport.UsbTransport
 import com.example.uwb.transport.TransportHolder
 import com.example.uwb.UI.PairingLoadingFragment
 import com.example.uwb.dataLg.KeyManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class BluetoothFragment : Fragment() {
+
+    companion object {
+        const val ARG_FRIEND_BUNDLE_JSON = "friend_bundle_json"
+    }
 
     private var _binding: FragmentBluetoothBinding? = null
     private val binding get() = _binding!!
@@ -40,31 +53,12 @@ class BluetoothFragment : Fragment() {
     private val ESP32_VENDOR_ID = 0x303A
     private val SCAN_PERIOD_MS = 10000L
 
-    /**
-     * Làm sạch tên thiết bị BLE.
-     *
-     * Hai loại tên rác thường gặp:
-     *   1. Chứa ký tự đặc biệt / không in được  → "SZZvX&UF-C{S"
-     *   2. Chứa data được encode thành alphanumeric → "5AEA000009KkpcSnZyVF-CL"
-     *      (dấu hiệu: đoạn chữ ≥ 8 ký tự CÓ CẢ BA loại: chữ hoa + chữ thường + số)
-     *
-     * Quy tắc:
-     *   1. Lọc ký tự: chỉ giữ A-Z a-z 0-9 space - _ . ( ) / : @ +
-     *   2. Nếu ký tự lạ chiếm > 30% → Unknown
-     *   3. Nếu tên trông như encoded data (đoạn dài ≥ 8 có upper+lower+digit) → Unknown
-     */
     private fun sanitizeBleName(raw: String?): String {
         if (raw.isNullOrEmpty()) return "Unknown"
-
-        // Bước 1: lọc ký tự không hợp lệ
         val allowed = Regex("[A-Za-z0-9 \\-_.()/:@+]")
         val cleaned = raw.filter { allowed.matches(it.toString()) }
         val garbageRatio = 1.0 - cleaned.length.toDouble() / raw.length
         if (cleaned.length < 2 || garbageRatio > 0.3) return "Unknown"
-
-        // Bước 2: phát hiện tên là encoded binary data
-        // Dấu hiệu: ít nhất một "từ" (đoạn alphanumeric liên tục) dài ≥ 8 ký tự
-        // VÀ chứa cả chữ hoa, chữ thường, chữ số cùng lúc → rất có thể là data encode
         val segments = cleaned.split(Regex("[^A-Za-z0-9]+"))
         val looksEncoded = segments.any { seg ->
             seg.length >= 8 &&
@@ -73,11 +67,9 @@ class BluetoothFragment : Fragment() {
             seg.any { it.isDigit() }
         }
         if (looksEncoded) return "Unknown"
-
         return cleaned.trim()
     }
 
-    // BLE scan callback — chỉ nhận BLE advertisements (không phải Classic Bluetooth)
     private val bleScanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
@@ -85,7 +77,6 @@ class BluetoothFragment : Fragment() {
                     requireContext(), Manifest.permission.BLUETOOTH_CONNECT
                 ) != PackageManager.PERMISSION_GRANTED
             ) return
-            // Bỏ qua nếu đã có trong danh sách
             if (deviceList.none { it.address == device.address }) {
                 deviceList.add(device)
                 val name = try { sanitizeBleName(device.name) } catch (e: Exception) { "Unknown" }
@@ -101,7 +92,6 @@ class BluetoothFragment : Fragment() {
         }
     }
 
-    // Receiver: bắt ESP32-S3 cắm vào khi app đang chạy
     private val usbAttachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
@@ -128,10 +118,8 @@ class BluetoothFragment : Fragment() {
             IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED)
         )
 
-        // Kết nối ESP32-S3 qua USB nếu đã cắm sẵn
         findAndConnectEsp32()
 
-        // Nhấn vào thiết bị BLE → chuyển sang màn hình pairing loading
         binding.rvBluetooth.setOnItemClickListener { _, _, position, _ ->
             val device = deviceList[position]
             val mac = device.address.lowercase()
@@ -171,25 +159,131 @@ class BluetoothFragment : Fragment() {
 
     private fun connectUsbDevice(device: UsbDevice) {
         usbTransport.openDevice(device) {
-            // Lưu transport vào holder để UwbFragment dùng lại
             TransportHolder.transport = usbTransport
 
-            // Nhận phản hồi từ S3 — chỉ log, không toast để tránh spam
-            // (UWB measurements đến ~2 Hz; PairingLoadingFragment/UwbFragment xử lý UI riêng)
-            usbTransport.receive { data ->
-                val msg = String(data).trim()
-                android.util.Log.d("S3_MSG", msg)
-            }
             requireActivity().runOnUiThread {
                 Toast.makeText(requireContext(), "Đã kết nối ESP32-S3 qua USB", Toast.LENGTH_SHORT).show()
+
+                val bundleJson = arguments?.getString(ARG_FRIEND_BUNDLE_JSON)
+                if (bundleJson != null) {
+                    lifecycleScope.launch { provisionFriendBundle(bundleJson) }
+                } else {
+                    restoreLogCallback()
+                }
             }
         }
     }
 
-    /**
-     * Quét BLE advertisements trong 10 giây.
-     * DevKit V1 sẽ xuất hiện trong danh sách với tên "ESP32-DevKit-BLE".
-     */
+    // ── USB Provisioning ────────────────────────────────────────────────────
+
+    private suspend fun provisionFriendBundle(bundleJson: String) {
+        val ctx = requireContext()
+        val serverPubKey = withContext(Dispatchers.IO) { ServerPublicKeyStore.load(ctx) }
+
+        if (serverPubKey == null) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(ctx, "Chưa có server signing key — không thể nạp bundle vào Tag", Toast.LENGTH_LONG).show()
+            }
+            restoreLogCallback()
+            return
+        }
+
+        // Line-buffered response channel — receive callback chạy trên IO thread của SerialInputOutputManager
+        val lineChannel = Channel<String>(Channel.UNLIMITED)
+        val buf = StringBuilder()
+
+        usbTransport.receive { data ->
+            buf.append(String(data, Charsets.UTF_8))
+            var idx = buf.indexOf("\n")
+            while (idx >= 0) {
+                val line = buf.substring(0, idx).trim()
+                buf.delete(0, idx + 1)
+                if (line.isNotEmpty()) lineChannel.trySend(line)
+                idx = buf.indexOf("\n")
+            }
+        }
+
+        // Send command, wait up to 3s for a response line that starts with expectedPrefix.
+        // Lines not matching the prefix (e.g. BLE/UWB debug output) are discarded silently.
+        suspend fun sendCmd(cmd: String, expectedPrefix: String = ""): String? {
+            usbTransport.send("$cmd\n".toByteArray(Charsets.UTF_8))
+            return withTimeoutOrNull(3_000L) {
+                var line: String
+                do { line = lineChannel.receive() }
+                while (expectedPrefix.isNotEmpty() && !line.startsWith(expectedPrefix))
+                line
+            }
+        }
+
+        var oldFirmware = false
+
+        // Step 1: SET_SERVER_PUBKEY
+        when (val r = sendCmd("SET_SERVER_PUBKEY $serverPubKey", "SERVER_PUBKEY_")) {
+            null -> {
+                oldFirmware = true
+            }
+            else -> {
+                if (!r.startsWith("SERVER_PUBKEY_OK")) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(ctx, "Tag từ chối server key: $r", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                Log.d("Provision", "SET_SERVER_PUBKEY → $r")
+            }
+        }
+
+        // Step 2: SET_TIME
+        if (!oldFirmware) {
+            val epoch = System.currentTimeMillis() / 1000
+            when (val r = sendCmd("SET_TIME $epoch", "TIME_")) {
+                null -> oldFirmware = true
+                else -> Log.d("Provision", "SET_TIME → $r")
+            }
+        }
+
+        // Step 3: SET_BUNDLE
+        if (!oldFirmware) {
+            val bundleB64 = Base64.encodeToString(
+                bundleJson.toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP
+            )
+            when (val r = sendCmd("SET_BUNDLE $bundleB64", "BUNDLE_")) {
+                null -> oldFirmware = true
+                else -> withContext(Dispatchers.Main) {
+                    if (r.startsWith("BUNDLE_OK")) {
+                        val friendId = r.split(":").getOrNull(1) ?: ""
+                        Toast.makeText(ctx, "Bundle đã nạp vào Tag ($friendId)", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val reason = r.removePrefix("BUNDLE_ERR:")
+                        Toast.makeText(ctx, "Tag từ chối bundle: $reason", Toast.LENGTH_LONG).show()
+                    }
+                    Log.d("Provision", "SET_BUNDLE → $r")
+                }
+            }
+        }
+
+        if (oldFirmware) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    ctx,
+                    "Vui lòng update Tag firmware để dùng tính năng Friend Sharing",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+
+        lineChannel.close()
+        restoreLogCallback()
+    }
+
+    private fun restoreLogCallback() {
+        usbTransport.receive { data ->
+            Log.d("S3_MSG", String(data).trim())
+        }
+    }
+
+    // ── BLE Scan ────────────────────────────────────────────────────────────
+
     private fun scanBle() {
         if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
             startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
@@ -207,7 +301,6 @@ class BluetoothFragment : Fragment() {
         bluetoothAdapter.bluetoothLeScanner?.startScan(bleScanCallback)
         Toast.makeText(requireContext(), "Đang quét BLE (10s)...", Toast.LENGTH_SHORT).show()
 
-        // Dừng scan sau 10 giây để tiết kiệm pin
         Handler(Looper.getMainLooper()).postDelayed({
             if (ActivityCompat.checkSelfPermission(
                     requireContext(), Manifest.permission.BLUETOOTH_SCAN
@@ -240,7 +333,6 @@ class BluetoothFragment : Fragment() {
             bluetoothAdapter?.bluetoothLeScanner?.stopScan(bleScanCallback)
         }
         requireContext().unregisterReceiver(usbAttachReceiver)
-        // Không disconnect USB ở đây — UwbFragment sẽ dùng lại transport này
         _binding = null
     }
 }
