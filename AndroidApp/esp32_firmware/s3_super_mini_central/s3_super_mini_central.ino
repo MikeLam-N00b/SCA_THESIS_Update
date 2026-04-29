@@ -305,7 +305,7 @@ static void processSetBundle(const char* b64json) {
     int         bundle_version = doc["bundle_version"] | 0;
     const char* friend_id      = doc["friend_id"];       // hex string, 16 chars
     const char* vehicle_id     = doc["vehicle_id"];
-    const char* friend_key_hex = doc["friend_key"];      // hex string, 32 chars
+    const char* friend_key_hex = doc["friend_key_hex"];  // hex string, 32 chars
     int         permissions    = doc["permissions"] | 0;
     const char* issued_at      = doc["issued_at"];       // ISO 8601
     const char* expires_at     = doc["expires_at"];
@@ -584,11 +584,12 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
     }
 };
 
-// Scan callback cho friend mode — tìm FRIEND_SERVICE_UUID thay vì SERVICE_UUID
+// Scan callback cho friend mode — tìm SERVICE_UUID (giống owner) vì Anchor chỉ advertise uuid đó.
+// Friend service (0xFACE) được discover sau khi connect, không phải trong advertisement.
 class FriendAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) override {
         if (!advertisedDevice.haveServiceUUID() ||
-            !advertisedDevice.isAdvertisingService(BLEUUID(FRIEND_SERVICE_UUID))) return;
+            !advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) return;
 
         Serial.printf("[Friend scan] Anchor: %s\n",
                       advertisedDevice.getAddress().toString().c_str());

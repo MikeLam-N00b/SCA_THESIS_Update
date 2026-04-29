@@ -45,6 +45,21 @@ typedef enum : int {
     TOKEN_ERR_INTERNAL,
 } token_verify_result_t;
 
+static inline const char* ft_result_str(token_verify_result_t r) {
+    switch (r) {
+        case TOKEN_OK:                    return "OK";
+        case TOKEN_ERR_VERSION_MISMATCH:  return "VERSION_MISMATCH";
+        case TOKEN_ERR_BAD_SIGNATURE:     return "BAD_SIGNATURE";
+        case TOKEN_ERR_NOT_YET_VALID:     return "NOT_YET_VALID";
+        case TOKEN_ERR_EXPIRED:           return "EXPIRED";
+        case TOKEN_ERR_REVOKED:           return "REVOKED";
+        case TOKEN_ERR_VEHICLE_MISMATCH:  return "VEHICLE_MISMATCH";
+        case TOKEN_ERR_PERMISSION_DENIED: return "PERMISSION_DENIED";
+        case TOKEN_ERR_INTERNAL:          return "INTERNAL";
+        default:                          return "UNKNOWN";
+    }
+}
+
 // ── On-wire bundle (received over BLE from guest device) ─────────────────────
 
 typedef struct {

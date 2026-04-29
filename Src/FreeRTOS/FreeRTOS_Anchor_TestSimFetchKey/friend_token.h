@@ -131,7 +131,8 @@ static token_verify_result_t friend_token_verify(
 
     // 2. Vehicle ID — null-safe comparison up to VEHICLE_ID_MAX
     if (strncmp(bundle->vehicle_id, expected_vehicle_id, VEHICLE_ID_MAX) != 0) {
-        Serial.printf("[%s] Vehicle mismatch: '%s'\n", TAG_TOKEN, bundle->vehicle_id);
+        Serial.printf("[%s] VEHICLE_MISMATCH: bundle='%s' expected='%s'\n",
+                      TAG_TOKEN, bundle->vehicle_id, expected_vehicle_id);
         return TOKEN_ERR_VEHICLE_MISMATCH;
     }
 
@@ -143,9 +144,26 @@ static token_verify_result_t friend_token_verify(
     }
 
     // 4. Time window
-    if (bundle->issued_at == 0 || bundle->expires_at == 0) return TOKEN_ERR_INTERNAL;
-    if (current_unix_time < bundle->issued_at)  return TOKEN_ERR_NOT_YET_VALID;
-    if (current_unix_time > bundle->expires_at) return TOKEN_ERR_EXPIRED;
+    if (bundle->issued_at == 0 || bundle->expires_at == 0) {
+        Serial.printf("[%s] TIME_PARSE_FAIL: issued_iso='%s' expires_iso='%s'\n",
+                      TAG_TOKEN, bundle->issued_at_iso, bundle->expires_at_iso);
+        return TOKEN_ERR_INTERNAL;
+    }
+    Serial.printf("[%s] Time: now=%lu  issued=%lu ('%s')  expires=%lu ('%s')\n",
+                  TAG_TOKEN,
+                  (unsigned long)current_unix_time,
+                  (unsigned long)bundle->issued_at,  bundle->issued_at_iso,
+                  (unsigned long)bundle->expires_at, bundle->expires_at_iso);
+    if (current_unix_time < bundle->issued_at) {
+        Serial.printf("[%s] NOT_YET_VALID: bundle starts in %lu s\n",
+                      TAG_TOKEN, (unsigned long)(bundle->issued_at - current_unix_time));
+        return TOKEN_ERR_NOT_YET_VALID;
+    }
+    if (current_unix_time > bundle->expires_at) {
+        Serial.printf("[%s] EXPIRED: bundle expired %lu s ago\n",
+                      TAG_TOKEN, (unsigned long)(current_unix_time - bundle->expires_at));
+        return TOKEN_ERR_EXPIRED;
+    }
 
     // 5. Revocation
     if (friend_revocation_is_revoked(bundle->friend_id)) {
@@ -170,6 +188,8 @@ static token_verify_result_t friend_token_verify(
              bundle->issued_at_iso,
              bundle->expires_at_iso,
              (int)bundle->permissions);
+
+    Serial.printf("[%s] ECDSA canonical: %s\n", TAG_TOKEN, msg);
 
     // SHA-256 of the canonical message
     uint8_t hash[32];
@@ -198,7 +218,9 @@ static token_verify_result_t friend_token_verify(
     mbedtls_pk_free(&pk);
 
     if (ret != 0) {
-        Serial.printf("[%s] Signature invalid: -0x%04X\n", TAG_TOKEN, (unsigned)(-ret));
+        Serial.printf("[%s] BAD_SIGNATURE: mbedtls -0x%04X\n"
+                      "[%s]   canonical='%s'\n",
+                      TAG_TOKEN, (unsigned)(-ret), TAG_TOKEN, msg);
         return TOKEN_ERR_BAD_SIGNATURE;
     }
 

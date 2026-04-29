@@ -115,6 +115,7 @@ static esp_err_t fm_get_nonce(const char *server_base, const char *vehicle_id,
     if (!nonce || strlen(nonce) < 32) return ESP_FAIL;
     strncpy(out_nonce, nonce, 32);
     out_nonce[32] = '\0';
+    Serial.printf("[%s] Nonce: %.8s...\n", TAG_FMGMT, out_nonce);
     return ESP_OK;
 }
 
@@ -167,9 +168,14 @@ static esp_err_t friend_mgmt_validate_online(
     char url[256];
     snprintf(url, sizeof(url), "%s/validate-friend-key", server_base);
 
+    Serial.printf("[%s] POST %s\n", TAG_FMGMT, url);
+    Serial.printf("[%s] Request: %.120s\n", TAG_FMGMT, body);  // first 120 chars
+
     String resp;
     int code = fm_post_auth(url, body, vehicle_id, pairing_key, resp);
     Serial.printf("[%s] validate-friend-key → HTTP %d\n", TAG_FMGMT, code);
+    if (resp.length() > 0)
+        Serial.printf("[%s] Response: %s\n", TAG_FMGMT, resp.c_str());
     return (code == 200) ? ESP_OK : ESP_FAIL;
 }
 
@@ -235,6 +241,8 @@ static esp_err_t friend_mgmt_sync_revocations(const char *server_base,
         }
     }
 
+    Serial.printf("[%s] Revocation sync start — last_sync='%s'\n", TAG_FMGMT, last_sync);
+
     char url[320];
     snprintf(url, sizeof(url), "%s/cars/%s/revocations?since=%s",
              server_base, vehicle_id, last_sync);
@@ -269,12 +277,13 @@ static esp_err_t friend_mgmt_sync_revocations(const char *server_base,
         if (friend_revocation_add(fid, revoked_ts) == ESP_OK) added++;
     }
 
-    if (added > 0)
-        Serial.printf("[%s] Synced %u new revocations\n", TAG_FMGMT, (unsigned)added);
+    Serial.printf("[%s] Revocation sync done — added=%u new entries\n",
+                  TAG_FMGMT, (unsigned)added);
 
     // Advance cursor to server_time so the next sync is a true delta
     const char *server_time = doc["server_time"];
     if (server_time) {
+        Serial.printf("[%s] Cursor advanced → '%s'\n", TAG_FMGMT, server_time);
         Preferences p;
         if (p.begin("sca_anchor", false)) {
             p.putString("rev_last_sync", server_time);

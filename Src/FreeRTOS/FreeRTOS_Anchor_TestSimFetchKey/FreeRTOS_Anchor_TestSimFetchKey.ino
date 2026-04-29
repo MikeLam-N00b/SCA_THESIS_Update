@@ -1364,20 +1364,36 @@ static void friendMgmtTask(void *param) {
     for (;;) {
         if (xQueueReceive(bundleQueue, &bundle, portMAX_DELAY) != pdTRUE) continue;
 
-        Serial.printf("[FRIEND] Bundle received from %02x%02x...\n",
-                      bundle.friend_id[0], bundle.friend_id[1]);
+        // Print full bundle detail so Serial Monitor shows exactly what was received
+        {
+            char fid_hex[FRIEND_ID_LEN * 2 + 1];
+            char fkey_hex[FRIEND_KEY_LEN * 2 + 1];
+            for (int i = 0; i < FRIEND_ID_LEN;  i++) snprintf(fid_hex  + i*2, 3, "%02x", bundle.friend_id[i]);
+            for (int i = 0; i < FRIEND_KEY_LEN; i++) snprintf(fkey_hex + i*2, 3, "%02x", bundle.friend_key[i]);
+            Serial.printf("[FRIEND] === Bundle received ===\n");
+            Serial.printf("[FRIEND]   friend_id  : %s\n", fid_hex);
+            Serial.printf("[FRIEND]   vehicle_id : %s\n", bundle.vehicle_id);
+            Serial.printf("[FRIEND]   friend_key : %s\n", fkey_hex);
+            Serial.printf("[FRIEND]   permissions: 0x%02X\n", bundle.permissions);
+            Serial.printf("[FRIEND]   issued_at  : %s (%lu)\n", bundle.issued_at_iso,  (unsigned long)bundle.issued_at);
+            Serial.printf("[FRIEND]   expires_at : %s (%lu)\n", bundle.expires_at_iso, (unsigned long)bundle.expires_at);
+            Serial.printf("[FRIEND]   sig_len    : %u bytes\n", (unsigned)bundle.issuer_sig_len);
+        }
 
         // Guard: require a synced clock for time-based checks
         uint32_t now = (uint32_t)time(NULL);
+        Serial.printf("[FRIEND] Clock: now=%lu %s\n",
+                      (unsigned long)now,
+                      now >= 1000000000UL ? "OK" : "NOT_SYNCED");
         if (now < 1000000000UL) {
-            Serial.println("[FRIEND] Clock not synced — rejecting");
+            Serial.println("[FRIEND] Reject: clock not synced (run wifiInit or SET_TIME)");
             ble_notify_friend_status(1, TOKEN_ERR_INTERNAL);
             continue;
         }
 
         // Step 1 — offline ECDSA + time + revocation
         token_verify_result_t r = friend_token_verify(&bundle, now, PERM_UNLOCK, VEHICLE_ID);
-        Serial.printf("[FRIEND] Offline verify: %d\n", (int)r);
+        Serial.printf("[FRIEND] Offline verify: %s (%d)\n", ft_result_str(r), (int)r);
 
         if (r != TOKEN_OK) {
             ble_notify_friend_status(1, r);
@@ -1387,19 +1403,22 @@ static void friendMgmtTask(void *param) {
         // Step 2 — cache lookup; first-time use requires online validate
         cached_friend_t cf;
         bool was_cached = (friend_cache_get(bundle.friend_id, &cf) == ESP_OK);
+        Serial.printf("[FRIEND] Cache: %s\n", was_cached ? "HIT" : "MISS");
 
         if (!was_cached) {
+            Serial.printf("[FRIEND] WiFi: %s\n",
+                          WiFi.status() == WL_CONNECTED ? "connected" : "NOT connected");
             if (WiFi.status() == WL_CONNECTED) {
-                Serial.println("[FRIEND] Cache miss — online validate");
+                Serial.println("[FRIEND] Cache miss — starting online validate");
                 if (friend_mgmt_validate_online(&bundle, SERVER_FALLBACK,
                                                  VEHICLE_ID, pairingKey) != ESP_OK) {
                     Serial.println("[FRIEND] Server rejected bundle");
                     ble_notify_friend_status(1, TOKEN_ERR_INTERNAL);
                     continue;
                 }
+                Serial.println("[FRIEND] Server accepted bundle");
             } else {
-                // No connectivity and no cache = cannot prove first-time validity
-                Serial.println("[FRIEND] Cache miss + no WiFi — rejecting");
+                Serial.println("[FRIEND] Reject: cache miss + no WiFi");
                 ble_notify_friend_status(1, TOKEN_ERR_INTERNAL);
                 continue;
             }
@@ -1470,7 +1489,12 @@ static void revocationSyncTask(void *param) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(5UL * 60 * 1000));  // sleep 5 minutes
 
-        if (WiFi.status() != WL_CONNECTED) continue;
+        uint32_t ts = (uint32_t)time(NULL);
+        bool wifiUp = (WiFi.status() == WL_CONNECTED);
+        Serial.printf("[revSyncTask] Wakeup: t=%lu WiFi=%s\n",
+                      (unsigned long)ts, wifiUp ? "up" : "down");
+
+        if (!wifiUp) continue;
 
         // Delta-sync revocations
         friend_mgmt_sync_revocations(SERVER_FALLBACK, VEHICLE_ID);
