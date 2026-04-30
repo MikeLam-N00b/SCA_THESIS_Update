@@ -22,14 +22,19 @@ class UsbTransport(private val context: Context) : Transport {
      */
     fun openDevice(device: UsbDevice, onConnected: (() -> Unit)? = null) {
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-        if (!usbManager.hasPermission(device)) {
-            permissionHelper.requestPermission(device) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+        fun connectInBackground() {
+            Thread {
                 initDevice(device, usbManager)
-                if (connected) onConnected?.invoke()
-            }
+                if (connected) mainHandler.post { onConnected?.invoke() }
+            }.start()
+        }
+
+        if (!usbManager.hasPermission(device)) {
+            permissionHelper.requestPermission(device) { connectInBackground() }
         } else {
-            initDevice(device, usbManager)
-            if (connected) onConnected?.invoke()
+            connectInBackground()
         }
     }
 

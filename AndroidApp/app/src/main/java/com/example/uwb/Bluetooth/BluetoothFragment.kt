@@ -38,6 +38,7 @@ class BluetoothFragment : Fragment() {
 
     companion object {
         const val ARG_FRIEND_BUNDLE_JSON = "friend_bundle_json"
+        private const val TAG = "FriendProvision"
     }
 
     private var _binding: FragmentBluetoothBinding? = null
@@ -118,31 +119,44 @@ class BluetoothFragment : Fragment() {
             IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED)
         )
 
-        findAndConnectEsp32()
-
-        binding.rvBluetooth.setOnItemClickListener { _, _, position, _ ->
-            val device = deviceList[position]
-            val mac = device.address.lowercase()
-            val name = if (ActivityCompat.checkSelfPermission(
-                    requireContext(), Manifest.permission.BLUETOOTH_CONNECT
-                ) == PackageManager.PERMISSION_GRANTED
-            ) sanitizeBleName(device.name) else "Unknown"
-
-            val pairingFragment = PairingLoadingFragment().apply {
-                arguments = Bundle().also {
-                    it.putString("DEVICE_MAC", mac)
-                    it.putString("DEVICE_NAME", name)
-                }
-            }
-
-            requireActivity().supportFragmentManager.beginTransaction()
-                .replace(com.example.uwb.R.id.fragment_container, pairingFragment)
-                .addToBackStack(null)
-                .commit()
+        val bundleJson = arguments?.getString(ARG_FRIEND_BUNDLE_JSON)
+        if (bundleJson != null) {
+            Log.i(TAG, "═══ FRIEND MODE ═══ BluetoothFragment nhận bundleJson (${bundleJson.length} chars) — chờ cắm Tag")
+            // Friend mode: ẩn BLE list, không cần scan, không cho click
+            binding.rvBluetooth.visibility = android.view.View.GONE
+            binding.btnRefresh.visibility = android.view.View.GONE
+            binding.tvTitle.text = "Cắm Tag vào USB..."
+        } else {
+            Log.i(TAG, "═══ OWNER MODE ═══ BluetoothFragment không có bundleJson — chỉ log USB")
         }
 
-        requestBluetoothPermissions()
-        binding.btnRefresh.setOnClickListener { scanBle() }
+        findAndConnectEsp32()
+
+        if (bundleJson == null) {
+            binding.rvBluetooth.setOnItemClickListener { _, _, position, _ ->
+                val device = deviceList[position]
+                val mac = device.address.lowercase()
+                val name = if (ActivityCompat.checkSelfPermission(
+                        requireContext(), Manifest.permission.BLUETOOTH_CONNECT
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) sanitizeBleName(device.name) else "Unknown"
+
+                val pairingFragment = PairingLoadingFragment().apply {
+                    arguments = Bundle().also {
+                        it.putString("DEVICE_MAC", mac)
+                        it.putString("DEVICE_NAME", name)
+                    }
+                }
+
+                requireActivity().supportFragmentManager.beginTransaction()
+                    .replace(com.example.uwb.R.id.fragment_container, pairingFragment)
+                    .addToBackStack(null)
+                    .commit()
+            }
+
+            requestBluetoothPermissions()
+            binding.btnRefresh.setOnClickListener { scanBle() }
+        }
 
         return binding.root
     }
@@ -158,16 +172,26 @@ class BluetoothFragment : Fragment() {
     }
 
     private fun connectUsbDevice(device: UsbDevice) {
+        Log.i(TAG, "USB: openDevice vendorId=0x${device.vendorId.toString(16)} productId=0x${device.productId.toString(16)}")
+        val bundleJson = arguments?.getString(ARG_FRIEND_BUNDLE_JSON)
+        if (bundleJson != null) {
+            _binding?.tvTitle?.text = "Đang kết nối USB..."
+            val usbManager = requireContext().getSystemService(android.content.Context.USB_SERVICE) as android.hardware.usb.UsbManager
+            if (!usbManager.hasPermission(device)) {
+                _binding?.tvTitle?.text = "Cấp quyền USB khi hộp thoại xuất hiện"
+            }
+        }
         usbTransport.openDevice(device) {
             TransportHolder.transport = usbTransport
 
             requireActivity().runOnUiThread {
-                Toast.makeText(requireContext(), "Đã kết nối ESP32-S3 qua USB", Toast.LENGTH_SHORT).show()
-
-                val bundleJson = arguments?.getString(ARG_FRIEND_BUNDLE_JSON)
                 if (bundleJson != null) {
+                    Log.i(TAG, "USB: connected — bundleJson present → bắt đầu provisionFriendBundle")
+                    _binding?.tvTitle?.text = "Đang nạp bundle..."
                     lifecycleScope.launch { provisionFriendBundle(bundleJson) }
                 } else {
+                    Log.i(TAG, "USB: connected — KHÔNG có bundleJson → owner log mode (KHÔNG gửi SET_BUNDLE)")
+                    Toast.makeText(requireContext(), "Đã kết nối ESP32-S3 qua USB", Toast.LENGTH_SHORT).show()
                     restoreLogCallback()
                 }
             }
@@ -178,15 +202,20 @@ class BluetoothFragment : Fragment() {
 
     private suspend fun provisionFriendBundle(bundleJson: String) {
         val ctx = requireContext()
-        val serverPubKey = withContext(Dispatchers.IO) { ServerPublicKeyStore.load(ctx) }
+        Log.i(TAG, "provisionFriendBundle: START — bundleJson length=${bundleJson.length}")
 
+        val serverPubKey = withContext(Dispatchers.IO) { ServerPublicKeyStore.load(ctx) }
         if (serverPubKey == null) {
+            Log.e(TAG, "provisionFriendBundle: ABORT — ServerPublicKeyStore trống, chưa có server signing key")
+            Log.e(TAG, "  → Nguyên nhân: owner chưa tạo QR (prefetchServerPublicKey chưa chạy)")
+            Log.e(TAG, "  → Fix: chạy owner flow tạo QR ít nhất một lần để cache server pubkey")
             withContext(Dispatchers.Main) {
                 Toast.makeText(ctx, "Chưa có server signing key — không thể nạp bundle vào Tag", Toast.LENGTH_LONG).show()
             }
             restoreLogCallback()
             return
         }
+        Log.i(TAG, "provisionFriendBundle: serverPubKey có sẵn (${serverPubKey.length} chars)")
 
         // Line-buffered response channel — receive callback chạy trên IO thread của SerialInputOutputManager
         val lineChannel = Channel<String>(Channel.UNLIMITED)
@@ -198,80 +227,121 @@ class BluetoothFragment : Fragment() {
             while (idx >= 0) {
                 val line = buf.substring(0, idx).trim()
                 buf.delete(0, idx + 1)
-                if (line.isNotEmpty()) lineChannel.trySend(line)
+                if (line.isNotEmpty()) {
+                    Log.v(TAG, "Tag→App: $line")
+                    lineChannel.trySend(line)
+                }
                 idx = buf.indexOf("\n")
             }
         }
 
-        // Send command, wait up to 3s for a response line that starts with expectedPrefix.
+        // Send command, wait up to timeoutMs for a response line starting with expectedPrefix.
         // Lines not matching the prefix (e.g. BLE/UWB debug output) are discarded silently.
-        suspend fun sendCmd(cmd: String, expectedPrefix: String = ""): String? {
+        suspend fun sendCmd(cmd: String, expectedPrefix: String = "", timeoutMs: Long = 3_000L): String? {
+            val displayCmd = if (cmd.length > 80) "${cmd.take(80)}...(${cmd.length} chars)" else cmd
+            Log.i(TAG, "App→Tag: $displayCmd")
             usbTransport.send("$cmd\n".toByteArray(Charsets.UTF_8))
-            return withTimeoutOrNull(3_000L) {
+            val result = withTimeoutOrNull(timeoutMs) {
                 var line: String
                 do { line = lineChannel.receive() }
                 while (expectedPrefix.isNotEmpty() && !line.startsWith(expectedPrefix))
                 line
             }
+            if (result == null) {
+                Log.e(TAG, "  TIMEOUT (${timeoutMs}ms) — không nhận được response bắt đầu bằng '$expectedPrefix'")
+            } else {
+                Log.i(TAG, "  Response: $result")
+            }
+            return result
         }
 
         var oldFirmware = false
 
         // Step 1: SET_SERVER_PUBKEY
+        Log.i(TAG, "─── Step 1: SET_SERVER_PUBKEY ───")
+        _binding?.tvTitle?.text = "Gửi server key... (1/3)"
         when (val r = sendCmd("SET_SERVER_PUBKEY $serverPubKey", "SERVER_PUBKEY_")) {
             null -> {
+                Log.w(TAG, "Step 1 TIMEOUT → firmware cũ hoặc Tag chưa sẵn sàng")
                 oldFirmware = true
             }
             else -> {
-                if (!r.startsWith("SERVER_PUBKEY_OK")) {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(ctx, "Tag từ chối server key: $r", Toast.LENGTH_SHORT).show()
-                    }
+                if (r.startsWith("SERVER_PUBKEY_OK")) {
+                    Log.i(TAG, "Step 1 OK ✓")
+                } else {
+                    Log.e(TAG, "Step 1 FAIL: Tag trả về '$r'")
+                    _binding?.tvTitle?.text = "Lỗi server key"
+                    Toast.makeText(ctx, "Tag từ chối server key: $r", Toast.LENGTH_SHORT).show()
                 }
-                Log.d("Provision", "SET_SERVER_PUBKEY → $r")
             }
         }
 
         // Step 2: SET_TIME
         if (!oldFirmware) {
+            Log.i(TAG, "─── Step 2: SET_TIME ───")
+            _binding?.tvTitle?.text = "Đồng bộ thời gian... (2/3)"
             val epoch = System.currentTimeMillis() / 1000
+            Log.i(TAG, "  epoch=$epoch")
             when (val r = sendCmd("SET_TIME $epoch", "TIME_")) {
-                null -> oldFirmware = true
-                else -> Log.d("Provision", "SET_TIME → $r")
+                null -> {
+                    Log.w(TAG, "Step 2 TIMEOUT → firmware cũ")
+                    oldFirmware = true
+                }
+                else -> Log.i(TAG, "Step 2 OK ✓ → $r")
             }
         }
 
         // Step 3: SET_BUNDLE
         if (!oldFirmware) {
+            Log.i(TAG, "─── Step 3: SET_BUNDLE ───")
+            _binding?.tvTitle?.text = "Gửi bundle... (3/3)"
             val bundleB64 = Base64.encodeToString(
                 bundleJson.toByteArray(Charsets.UTF_8),
                 Base64.NO_WRAP
             )
-            when (val r = sendCmd("SET_BUNDLE $bundleB64", "BUNDLE_")) {
-                null -> oldFirmware = true
-                else -> withContext(Dispatchers.Main) {
+            Log.i(TAG, "  bundleJson=${bundleJson.length} chars → base64=${bundleB64.length} chars")
+            Log.i(TAG, "  Tổng command length = ${11 + bundleB64.length} chars (SET_BUNDLE + space + b64)")
+            // ECDSA P-256 verify trên ESP32-S3 (mbedTLS) mất 2-4s → dùng 10s timeout
+            when (val r = sendCmd("SET_BUNDLE $bundleB64", "BUNDLE_", timeoutMs = 10_000L)) {
+                null -> {
+                    Log.e(TAG, "Step 3 TIMEOUT (10s) — Tag không respond: crash/watchdog hoặc firmware cũ")
+                    oldFirmware = true
+                }
+                else -> {
                     if (r.startsWith("BUNDLE_OK")) {
                         val friendId = r.split(":").getOrNull(1) ?: ""
+                        Log.i(TAG, "Step 3 OK ✓ → BUNDLE_OK friendId=$friendId — Tag sẽ tự scan BLE và connect Anchor")
+                        _binding?.tvTitle?.text = "Bundle OK — Tag đang kết nối Anchor"
                         Toast.makeText(ctx, "Bundle đã nạp vào Tag ($friendId)", Toast.LENGTH_SHORT).show()
                     } else {
                         val reason = r.removePrefix("BUNDLE_ERR:")
+                        Log.e(TAG, "Step 3 FAIL: BUNDLE_ERR:$reason")
+                        Log.e(TAG, when (reason) {
+                            "json_failed"     -> "  → JSON parse lỗi: có thể buffer Tag vẫn quá nhỏ (cần >= 2048)"
+                            "missing_fields"  -> "  → JSON thiếu field: kiểm tra friend_key_hex, friend_id, vehicle_id, issued_at, expires_at"
+                            "verify_failed"   -> "  → ECDSA verify lỗi: canonical message không khớp server"
+                            "no_server_key"   -> "  → Tag chưa có server pubkey: SET_SERVER_PUBKEY chưa thành công"
+                            "wire_pack_failed"-> "  → Không pack wire bundle được"
+                            else              -> "  → Lỗi không xác định: $reason"
+                        })
+                        _binding?.tvTitle?.text = "Bundle lỗi: $reason"
                         Toast.makeText(ctx, "Tag từ chối bundle: $reason", Toast.LENGTH_LONG).show()
                     }
-                    Log.d("Provision", "SET_BUNDLE → $r")
                 }
             }
         }
 
         if (oldFirmware) {
-            withContext(Dispatchers.Main) {
-                Toast.makeText(
-                    ctx,
-                    "Vui lòng update Tag firmware để dùng tính năng Friend Sharing",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
+            Log.e(TAG, "provisionFriendBundle: ABORT — firmware Tag cũ, cần update")
+            _binding?.tvTitle?.text = "Firmware cũ — cần update Tag"
+            Toast.makeText(
+                ctx,
+                "Vui lòng update Tag firmware để dùng tính năng Friend Sharing",
+                Toast.LENGTH_LONG
+            ).show()
         }
 
+        Log.i(TAG, "provisionFriendBundle: END")
         lineChannel.close()
         restoreLogCallback()
     }

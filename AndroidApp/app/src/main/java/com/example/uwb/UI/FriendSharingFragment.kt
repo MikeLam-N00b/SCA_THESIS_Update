@@ -173,8 +173,12 @@ class FriendSharingFragment : Fragment() {
     }
 
     private fun claimFromUrl(url: String) {
+        Log.i("FriendSharing", "════ claimFromUrl START ════")
+        Log.i("FriendSharing", "  URL: $url")
         val token = Uri.parse(url).lastPathSegment
+        Log.i("FriendSharing", "  token: $token")
         if (token.isNullOrBlank()) {
+            Log.e("FriendSharing", "  ABORT — token rỗng, QR không hợp lệ")
             Toast.makeText(requireContext(), "Mã QR không hợp lệ", Toast.LENGTH_SHORT).show()
             return
         }
@@ -182,21 +186,34 @@ class FriendSharingFragment : Fragment() {
         setLoading(true)
         lifecycleScope.launch {
             try {
+                Log.i("FriendSharing", "  [1] GET /friend-sharing/claim/$token ...")
                 val bundle = withContext(Dispatchers.IO) { ApiClient.api.claimFriendShare(token) }
+                Log.i("FriendSharing", "  [1] bundle nhận được:")
+                Log.i("FriendSharing", "      friend_id   = ${bundle.friend_id}")
+                Log.i("FriendSharing", "      vehicle_id  = ${bundle.vehicle_id}")
+                Log.i("FriendSharing", "      friend_name = ${bundle.friend_name}")
+                Log.i("FriendSharing", "      issued_at   = ${bundle.issued_at}")
+                Log.i("FriendSharing", "      expires_at  = ${bundle.expires_at}")
+                Log.i("FriendSharing", "      permissions = ${bundle.permissions}")
+                Log.i("FriendSharing", "      friend_key_hex length = ${bundle.friend_key_hex.length}")
+                Log.i("FriendSharing", "      issuer_sig_b64 length = ${bundle.issuer_sig_b64.length}")
 
                 // ── ECDSA verify ────────────────────────────────────────────
+                Log.i("FriendSharing", "  [2] ECDSA verify ...")
                 var pubKeyB64 = ServerPublicKeyStore.load(requireContext())
 
                 if (pubKeyB64 == null) {
-                    // Lazy fetch: chưa có cache → thử fetch ngay
+                    Log.w("FriendSharing", "  [2] ServerPublicKeyStore trống → lazy fetch từ server ...")
                     pubKeyB64 = try {
                         withContext(Dispatchers.IO) {
                             ApiClient.api.getServerPublicKey().server_public_key_b64
                         }.also { ServerPublicKeyStore.save(requireContext(), it) }
                     } catch (e: Exception) {
-                        Log.w("FriendSharing", "Server key fetch failed — skipping verify: ${e.message}")
+                        Log.w("FriendSharing", "  [2] Server key fetch FAILED: ${e.message} — skip verify")
                         null
                     }
+                } else {
+                    Log.i("FriendSharing", "  [2] ServerPublicKeyStore có sẵn (${pubKeyB64.length} chars)")
                 }
 
                 if (pubKeyB64 != null) {
@@ -204,19 +221,18 @@ class FriendSharingFragment : Fragment() {
                         EcdsaVerifier.verifyFriendBundle(bundle, pubKeyB64)
                     }
                     if (!valid) {
+                        Log.e("FriendSharing", "  [2] ECDSA verify FAILED — chữ ký không khớp server")
+                        Log.e("FriendSharing", "      Canonical msg phải là: v{ver}|{friend_id_hex}|{vehicle_id}|{key_hex}|{issued_at}|{expires_at}|{perms}")
                         Toast.makeText(
                             requireContext(),
                             "Mã QR không hợp lệ — chữ ký không khớp với server",
                             Toast.LENGTH_LONG
                         ).show()
-                        if (BuildConfig.DEBUG) {
-                            Log.w("FriendSharing", "ECDSA verify FAILED for bundle ${bundle.friend_id}")
-                        }
                         return@launch
                     }
+                    Log.i("FriendSharing", "  [2] ECDSA verify OK ✓")
                 } else {
-                    // Không có pubkey + không fetch được → cảnh báo, vẫn lưu để Anchor verify sau
-                    Log.w("FriendSharing", "No server pubkey available — skipping local verify (Anchor will verify)")
+                    Log.w("FriendSharing", "  [2] Không có pubkey → skip local verify (Anchor sẽ verify)")
                 }
                 // ───────────────────────────────────────────────────────────
 
@@ -225,13 +241,18 @@ class FriendSharingFragment : Fragment() {
                     .toByteArray()
 
                 val bundleJson = Gson().toJson(bundle)
+                Log.i("FriendSharing", "  [3] bundleJson length = ${bundleJson.length} chars")
                 KeyManager.saveFriendBundle(bundle.vehicle_id, bundle.friend_id, keyBytes, bundleJson)
+                Log.i("FriendSharing", "  [3] KeyManager.saveFriendBundle OK")
 
                 Toast.makeText(
                     requireContext(),
                     "Đã nhận quyền từ ${bundle.friend_name} — xe ${bundle.vehicle_id}",
                     Toast.LENGTH_SHORT
                 ).show()
+
+                Log.i("FriendSharing", "  [4] Navigate → BluetoothFragment (FRIEND MODE) với bundleJson")
+                Log.i("FriendSharing", "      → Cắm Tag vào USB để provisionFriendBundle chạy tự động")
 
                 // Navigate to Bluetooth với bundle để USB provisioning
                 parentFragmentManager.beginTransaction()
@@ -247,9 +268,11 @@ class FriendSharingFragment : Fragment() {
                     .commit()
 
             } catch (e: Exception) {
+                Log.e("FriendSharing", "  claimFromUrl EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
                 Toast.makeText(requireContext(), "Lỗi nhận key: ${e.message}", Toast.LENGTH_LONG).show()
             } finally {
                 setLoading(false)
+                Log.i("FriendSharing", "════ claimFromUrl END ════")
             }
         }
     }

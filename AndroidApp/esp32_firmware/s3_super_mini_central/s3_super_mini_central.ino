@@ -234,8 +234,12 @@ static bool verifyBundleEcdsa(int bundle_version, const char* friend_id_hex,
                                const char* vehicle_id, const char* friend_key_hex,
                                const char* issued_at, const char* expires_at,
                                int permissions, const char* sig_b64) {
+    // Static buffers: keep large arrays off the usbSerialTask stack (8KB limit)
+    static char    msg[256];
+    static uint8_t pkDer[128];
+    static uint8_t sigDer[ECDSA_SIG_DER_MAX];
+
     // Build canonical message
-    char msg[256];
     snprintf(msg, sizeof(msg), "v%d|%s|%s|%s|%s|%s|%d",
              bundle_version, friend_id_hex, vehicle_id,
              friend_key_hex, issued_at, expires_at, permissions);
@@ -245,16 +249,14 @@ static bool verifyBundleEcdsa(int bundle_version, const char* friend_id_hex,
     mbedtls_sha256((const unsigned char*)msg, strlen(msg), hash, 0);
 
     // Load server public key from NVS
-    uint8_t pkDer[128];
-    size_t  pkLen = nvsLoadServerPubkey(pkDer, sizeof(pkDer));
+    size_t pkLen = nvsLoadServerPubkey(pkDer, sizeof(pkDer));
     if (pkLen == 0) {
         Serial.println("[ECDSA] Server pubkey not in NVS — run SET_SERVER_PUBKEY first");
         return false;
     }
 
     // Base64-decode DER signature
-    uint8_t sigDer[ECDSA_SIG_DER_MAX];
-    size_t  sigLen = 0;
+    size_t sigLen = 0;
     if (mbedtls_base64_decode(sigDer, sizeof(sigDer), &sigLen,
                               (const unsigned char*)sig_b64, strlen(sig_b64)) != 0) {
         Serial.println("[ECDSA] Signature base64 decode failed");
@@ -285,8 +287,10 @@ static bool verifyBundleEcdsa(int bundle_version, const char* friend_id_hex,
 // =============================================================================
 
 static void processSetBundle(const char* b64json) {
-    // Decode base64 → raw JSON
-    uint8_t jsonBuf[1024];
+    Serial.printf("[bundle] received b64 len=%d\n", strlen(b64json));
+
+    // Static buffer: 1024 bytes off the usbSerialTask stack
+    static uint8_t jsonBuf[1024];
     size_t  jsonLen = 0;
     if (mbedtls_base64_decode(jsonBuf, sizeof(jsonBuf) - 1, &jsonLen,
                               (const unsigned char*)b64json, strlen(b64json)) != 0) {
@@ -294,6 +298,7 @@ static void processSetBundle(const char* b64json) {
         return;
     }
     jsonBuf[jsonLen] = '\0';
+    Serial.printf("[bundle] decoded %d bytes OK\n", jsonLen);
 
     // Parse JSON
     DynamicJsonDocument doc(1024);
@@ -301,6 +306,7 @@ static void processSetBundle(const char* b64json) {
         Serial.println("BUNDLE_ERR:json_failed");
         return;
     }
+    Serial.println("[bundle] JSON parsed OK");
 
     int         bundle_version = doc["bundle_version"] | 0;
     const char* friend_id      = doc["friend_id"];       // hex string, 16 chars
@@ -315,6 +321,10 @@ static void processSetBundle(const char* b64json) {
         Serial.println("BUNDLE_ERR:missing_fields");
         return;
     }
+
+    // Yield to IDLE task before heavy ECDSA (2-4s) so TWDT doesn't fire
+    Serial.println("[bundle] Verifying signature...");
+    vTaskDelay(pdMS_TO_TICKS(5));
 
     // Verify ECDSA signature offline
     if (!verifyBundleEcdsa(bundle_version, friend_id, vehicle_id, friend_key_hex,
@@ -335,7 +345,7 @@ static void processSetBundle(const char* b64json) {
     strncpy((char*)(s_bundleWire + 90), expires_at,  31);
 
     // Decode DER signature (already verified above, re-decode to pack)
-    uint8_t sigDer[ECDSA_SIG_DER_MAX];
+    static uint8_t sigDer[ECDSA_SIG_DER_MAX];
     size_t  sigLen = 0;
     mbedtls_base64_decode(sigDer, sizeof(sigDer), &sigLen,
                           (const unsigned char*)sig_b64, strlen(sig_b64));
@@ -913,7 +923,7 @@ static void usbSerialTask(void* param) {
 
                 buf = "";
             } else {
-                if (buf.length() < 256) buf += c;
+                if (buf.length() < 2048) buf += c;  // SET_BUNDLE line is ~540 chars
             }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -1077,7 +1087,7 @@ void setup() {
                       (unsigned)s_bundleWireLen);
     }
 
-    xTaskCreatePinnedToCore(usbSerialTask, "USB_Task", 8192,  NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(usbSerialTask, "USB_Task", 16384, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(bleTask,       "BLE_Task", 10240, NULL, 3, NULL, 0);
     xTaskCreatePinnedToCore(uwbTask,       "UWB_Task", 8192,  NULL, 4, NULL, 1);
 
