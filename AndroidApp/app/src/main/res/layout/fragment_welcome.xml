@@ -7,14 +7,6 @@
     android:background="@drawable/bg_gradient_blue_soft"
     android:padding="24dp">
 
-    <!-- Guideline trên -->
-    <androidx.constraintlayout.widget.Guideline
-        android:id="@+id/guide30"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        app:layout_constraintGuide_percent="0.18331054" />
-
     <!-- Guideline dưới (QUAN TRỌNG) -->
     <androidx.constraintlayout.widget.Guideline
         android:id="@+id/guideBottom"
@@ -23,25 +15,38 @@
         android:orientation="horizontal"
         app:layout_constraintGuide_begin="626dp" />
 
-    <!-- Title -->
+    <!-- Title block -->
     <LinearLayout
         android:id="@+id/titleContainer"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
+        android:orientation="vertical"
+        android:gravity="center"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="8dp">
 
         <TextView
             android:id="@+id/tvTitle"
             android:text="SMART ACCESS"
-            android:textSize="35sp"
+            android:textSize="34sp"
             android:textStyle="bold"
-            android:textColor="#2B2B2B"
+            android:textColor="#1A1A2E"
+            android:letterSpacing="0.12"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"/>
+
+        <TextView
+            android:id="@+id/tvSubtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Designed by members of SRC-CKD"
+            android:textSize="11.5sp"
+            android:textColor="#6B6B8A"
+            android:textStyle="normal"
+            android:letterSpacing="0.04"
+            android:layout_marginTop="5dp"/>
 
     </LinearLayout>
 
@@ -51,7 +56,8 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        app:layout_constraintTop_toBottomOf="@id/guide30"
+        android:layout_marginTop="28dp"
+        app:layout_constraintTop_toBottomOf="@id/titleContainer"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
@@ -74,13 +80,15 @@
                 <TextView
                     android:text="OWPA"
                     android:textSize="28sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.08"
                     android:textColor="#FFFFFF"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"/>
 
                 <TextView
                     android:text="One-Way Pairing Access"
-                    android:textSize="14sp"
+                    android:textSize="13sp"
                     android:textColor="#EDE7FF"
                     android:layout_marginTop="4dp"
                     android:layout_width="wrap_content"
@@ -106,13 +114,15 @@
                 <TextView
                     android:text="SHARE"
                     android:textSize="28sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.08"
                     android:textColor="#FFFFFF"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"/>
 
                 <TextView
                     android:text="Friend Sharing"
-                    android:textSize="14sp"
+                    android:textSize="13sp"
                     android:textColor="#B2DFDB"
                     android:layout_marginTop="4dp"
                     android:layout_width="wrap_content"
@@ -122,77 +132,18 @@
 
     </LinearLayout>
 
-    <!-- Car Circle -->
-    <FrameLayout
-        android:id="@+id/carContainer"
+    <!-- Logo HCMUTE -->
+    <ImageView
+        android:id="@+id/imgCar"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:background="@drawable/bg_circle_border"
-        android:padding="20dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/logo_hcmute"
+        android:layout_marginTop="20dp"
         app:layout_constraintTop_toBottomOf="@id/btnRow"
         app:layout_constraintBottom_toTopOf="@id/guideBottom"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintDimensionRatio="1:1"
-        android:layout_marginTop="24dp">
-
-        <ImageView
-            android:id="@+id/imgCar"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:scaleType="fitCenter"
-            android:src="@drawable/car_key_central" />
-    </FrameLayout>
-
-<!--    &lt;!&ndash; BOTTOM BAR &ndash;&gt;-->
-<!--    <LinearLayout-->
-<!--        android:id="@+id/bottomBar"-->
-<!--        android:layout_width="0dp"-->
-<!--        android:layout_height="90dp"-->
-<!--        android:background="@drawable/bg_bottom_bar"-->
-<!--        android:orientation="horizontal"-->
-<!--        android:gravity="center"-->
-<!--        android:weightSum="3"-->
-<!--        app:layout_constraintTop_toBottomOf="@id/guideBottom"-->
-<!--        app:layout_constraintBottom_toBottomOf="parent"-->
-<!--        app:layout_constraintStart_toStartOf="parent"-->
-<!--        app:layout_constraintEnd_toEndOf="parent"-->
-<!--        android:padding="10dp">-->
-
-<!--        <ImageView-->
-<!--            android:id="@+id/iconHome"-->
-<!--            android:layout_width="0dp"-->
-<!--            android:layout_height="match_parent"-->
-<!--            android:layout_weight="1"-->
-<!--            android:src="@drawable/ic_owpa"-->
-<!--            android:scaleType="fitCenter"/>-->
-
-<!--        <View-->
-<!--            android:layout_width="2dp"-->
-<!--            android:layout_height="match_parent"-->
-<!--            android:background="#80000000"/>-->
-
-<!--        <ImageView-->
-<!--            android:id="@+id/iconCar"-->
-<!--            android:layout_width="0dp"-->
-<!--            android:layout_height="match_parent"-->
-<!--            android:layout_weight="1"-->
-<!--            android:src="@drawable/ic_paired"-->
-<!--            android:scaleType="fitCenter"/>-->
-
-<!--        <View-->
-<!--            android:layout_width="2dp"-->
-<!--            android:layout_height="match_parent"-->
-<!--            android:background="#80000000"/>-->
-
-<!--        <ImageView-->
-<!--            android:id="@+id/iconSettings"-->
-<!--            android:layout_width="0dp"-->
-<!--            android:layout_height="40dp"-->
-<!--            android:layout_weight="1"-->
-<!--            android:src="@drawable/ic_settings"-->
-<!--            android:scaleType="fitCenter"/>-->
-
-<!--    </LinearLayout>-->
+        app:layout_constraintDimensionRatio="1:1"/>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
