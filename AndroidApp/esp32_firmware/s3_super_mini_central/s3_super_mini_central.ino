@@ -404,7 +404,7 @@ static bool initUWB() {
     dwt_setrxtimeout(RESP_RX_TIMEOUT_UUS);
     dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);
 
-    memcpy(&sts_key, pairingKey, sizeof(sts_key));
+    memcpy(&sts_key, isFriendMode ? friendKey : pairingKey, sizeof(sts_key));
     sts_iv = { 0x00000001U, 0x00000000U, 0x00000000U, 0x00000000U };
     dwt_configurestskey(&sts_key);
     dwt_configurestsiv(&sts_iv);
@@ -442,6 +442,8 @@ static bool uwbInitiatorLoop() {
     dwt_writetxfctrl(sizeof(tx_poll_msg), 0U, 1);
 
     if (dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED) != DWT_SUCCESS) {
+        static uint32_t s_txFail = 0;
+        if (++s_txFail % 50 == 1) Serial.printf("[UWB] TX_FAIL cnt=%lu\n", (unsigned long)s_txFail);
         frame_seq_nb++; return false;
     }
 
@@ -449,29 +451,46 @@ static bool uwbInitiatorLoop() {
     unsigned long t0 = millis();
     while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) &
              (SYS_STATUS_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR))) {
-        if ((millis() - t0) > 600UL) { dwt_forcetrxoff(); frame_seq_nb++; return false; }
+        if ((millis() - t0) > 600UL) {
+            dwt_forcetrxoff(); frame_seq_nb++;
+            static uint32_t s_rxTo = 0;
+            if (++s_rxTo % 10 == 1) Serial.printf("[UWB] RX_TIMEOUT cnt=%lu — Anchor không phản hồi\n", (unsigned long)s_rxTo);
+            return false;
+        }
         taskYIELD();
     }
     frame_seq_nb++;
 
     if (!(status_reg & SYS_STATUS_RXFCG_BIT_MASK)) {
         dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+        static uint32_t s_rxErr = 0;
+        if (++s_rxErr % 10 == 1) Serial.printf("[UWB] RX_ERR status=0x%08lX cnt=%lu\n", (unsigned long)status_reg, (unsigned long)s_rxErr);
         return false;
     }
 
     int16_t stsQual;
     if (dwt_readstsquality(&stsQual) < 0) {
         dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_GOOD);
+        static uint32_t s_stsErr = 0;
+        if (++s_stsErr % 10 == 1) Serial.printf("[UWB] STS_FAIL qual=%d cnt=%lu — key mismatch?\n", (int)stsQual, (unsigned long)s_stsErr);
         return false;
     }
 
     dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG_BIT_MASK);
     uint32_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RXFLEN_MASK;
-    if (frame_len == 0 || frame_len > sizeof(rx_buffer)) return false;
+    if (frame_len == 0 || frame_len > sizeof(rx_buffer)) {
+        static uint32_t s_lenErr = 0;
+        if (++s_lenErr % 10 == 1) Serial.printf("[UWB] FRAME_LEN_ERR len=%lu\n", (unsigned long)frame_len);
+        return false;
+    }
 
     dwt_readrxdata(rx_buffer, frame_len, 0U);
     rx_buffer[ALL_MSG_SN_IDX] = 0U;
-    if (memcmp(rx_buffer, rx_resp_msg, ALL_MSG_COMMON_LEN) != 0) return false;
+    if (memcmp(rx_buffer, rx_resp_msg, ALL_MSG_COMMON_LEN) != 0) {
+        static uint32_t s_frmErr = 0;
+        if (++s_frmErr % 10 == 1) Serial.printf("[UWB] FRAME_MISMATCH cnt=%lu\n", (unsigned long)s_frmErr);
+        return false;
+    }
 
     uint32_t poll_tx_ts  = dwt_readtxtimestamplo32();
     uint32_t resp_rx_ts  = dwt_readrxtimestamplo32();
@@ -490,6 +509,9 @@ static bool uwbInitiatorLoop() {
     if (distance < 0.0f || distance > 100.0f) return false;
 
     float filtDist = applyDistanceFilter(distance);
+
+    // Output distance every 5th measurement (~5 Hz) for Android app display
+    { static uint8_t s_distDiv = 0; if (++s_distDiv >= 5) { s_distDiv = 0; Serial.printf("DIST:%.2fm\n", filtDist); } }
 
     if (filtDist > UWB_FAR_DISTANCE_M) {
         tagInUnlockZone = false;

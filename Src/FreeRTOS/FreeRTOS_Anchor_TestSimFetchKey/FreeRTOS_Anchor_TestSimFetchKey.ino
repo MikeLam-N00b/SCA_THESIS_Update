@@ -123,11 +123,14 @@ static dwt_config_t uwbConfig = {
     1001, DWT_STS_MODE_1, DWT_STS_LEN_256, DWT_PDOA_M0
 };
 
-// STS key/IV — derived từ pairingKey khi initUWB() chạy
-// Cả Anchor và Tag dùng cùng pairingKey → cùng STS key → authenticate UWB frame
+// STS key/IV
+// Owner mode: cả Anchor và Tag dùng pairingKey → khớp STS
+// Friend mode: cả Anchor và Tag dùng friend_key (từ bundle) → khớp STS
 static dwt_sts_cp_key_t sts_key;
 static dwt_sts_cp_iv_t  sts_iv;
 static bool stsConfigured = false;
+static uint8_t s_activeFriendKey[16] = {};  // set khi bundle accepted, clear khi disconnect
+static volatile bool s_uwbFriendMode = false;
 extern dwt_txconfig_t txconfig_options;
 
 // Header: 0x41 0x88 = IEEE 802.15.4 frame control; 0xCA 0xDE = PAN ID
@@ -857,6 +860,8 @@ class MyServerCallbacks : public BLEServerCallbacks {
         uint8_t cmd;
         cmd = UWB_CMD_DEINIT; xQueueSend(uwbQueue, &cmd, pdMS_TO_TICKS(10));
         s_friendBundleVerified = false;
+        s_uwbFriendMode = false;
+        memset(s_activeFriendKey, 0, sizeof(s_activeFriendKey));
 
         // Lock only if car was actually unlocked — handles both owner and friend mode.
         // If bundle was rejected or Tag disconnects before VERIFIED, car is still locked.
@@ -1063,9 +1068,8 @@ static bool initUWB() {
     dwt_settxantennadelay(TX_ANT_DLY);
     dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);
 
-    // Derive STS key từ pairingKey (16 bytes = 4 × uint32_t)
-    // Cả Anchor và Tag dùng cùng pairingKey → STS key khớp → UWB frame được xác thực
-    memcpy(&sts_key, pairingKey, sizeof(sts_key));
+    // Friend mode: dùng friend_key; Owner mode: dùng pairingKey
+    memcpy(&sts_key, s_uwbFriendMode ? s_activeFriendKey : pairingKey, sizeof(sts_key));
     // IV: upper 96 bits cố định, lower 32 bits = counter reset mỗi ranging
     sts_iv.iv0 = 0x00000001U;
     sts_iv.iv1 = 0x00000000U;
@@ -1435,6 +1439,8 @@ if (!was_cached) {
         // Tag will discover the main service, send TAG_UWB_READY, do actual ranging,
         // then send VERIFIED when close enough → CharacteristicCallbacks queues
         // CAN_CMD_UNLOCK.  We do NOT unlock here — proximity is enforced by UWB.
+        memcpy(s_activeFriendKey, bundle.friend_key, FRIEND_KEY_LEN);
+        s_uwbFriendMode = true;
         s_friendBundleVerified = true;
         ble_notify_friend_status(0, TOKEN_OK);
         Serial.printf("[FRIEND] Bundle accepted for %02x%02x%02x%02x... — waiting for UWB\n",

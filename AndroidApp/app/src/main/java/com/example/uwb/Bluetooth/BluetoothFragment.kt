@@ -10,6 +10,7 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -278,20 +279,17 @@ class BluetoothFragment : Fragment() {
         }
 
         var oldFirmware = false
+        var bundleOk    = false
+
+        try {
 
         // Step 1: SET_SERVER_PUBKEY
-        Log.i(TAG, "─── Step 1: SET_SERVER_PUBKEY ───")
         _binding?.tvTitle?.text = "Gửi server key... (1/3)"
         when (val r = sendCmd("SET_SERVER_PUBKEY $serverPubKey", "SERVER_PUBKEY_")) {
-            null -> {
-                Log.w(TAG, "Step 1 TIMEOUT → firmware cũ hoặc Tag chưa sẵn sàng")
-                oldFirmware = true
-            }
+            null -> { Log.w(TAG, "Step 1 TIMEOUT"); oldFirmware = true }
             else -> {
-                if (r.startsWith("SERVER_PUBKEY_OK")) {
-                    Log.i(TAG, "Step 1 OK ✓")
-                } else {
-                    Log.e(TAG, "Step 1 FAIL: Tag trả về '$r'")
+                if (r.startsWith("SERVER_PUBKEY_OK")) Log.i(TAG, "Step 1 OK")
+                else {
                     _binding?.tvTitle?.text = "Lỗi server key"
                     Toast.makeText(ctx, "Tag từ chối server key: $r", Toast.LENGTH_SHORT).show()
                 }
@@ -300,40 +298,34 @@ class BluetoothFragment : Fragment() {
 
         // Step 2: SET_TIME
         if (!oldFirmware) {
-            Log.i(TAG, "─── Step 2: SET_TIME ───")
             _binding?.tvTitle?.text = "Đồng bộ thời gian... (2/3)"
             val epoch = System.currentTimeMillis() / 1000
             Log.i(TAG, "  epoch=$epoch")
             when (val r = sendCmd("SET_TIME $epoch", "TIME_")) {
-                null -> {
-                    Log.w(TAG, "Step 2 TIMEOUT → firmware cũ")
-                    oldFirmware = true
-                }
-                else -> Log.i(TAG, "Step 2 OK ✓ → $r")
+                null -> { Log.w(TAG, "Step 2 TIMEOUT"); oldFirmware = true }
+                else -> Log.i(TAG, "Step 2 OK: $r")
             }
         }
 
-        // Step 3: SET_BUNDLE_BIN — binary 106 bytes, base64-encoded → 144 chars → fits 256-byte RX buffer
+        // Step 3: SET_BUNDLE_BIN
         if (!oldFirmware) {
-            Log.i(TAG, "─── Step 3: SET_BUNDLE_BIN ───")
             _binding?.tvTitle?.text = "Gửi bundle... (3/3)"
             val bundleB64 = Base64.encodeToString(bundle, Base64.NO_WRAP)
-            Log.i(TAG, "  bundle=${bundle.size} bytes → base64=${bundleB64.length} chars")
-            // ECDSA P-256 verify trên ESP32-S3 (mbedTLS) mất ~150-300ms → 10s timeout an toàn
+            Log.i(TAG, "  bundle=${bundle.size} bytes -> base64=${bundleB64.length} chars")
             when (val r = sendCmd("SET_BUNDLE_BIN $bundleB64", "BUNDLE_", timeoutMs = 10_000L)) {
                 null -> {
-                    Log.e(TAG, "Step 3 TIMEOUT (10s) — firmware cũ hoặc Tag crash")
-                    oldFirmware = true
+                    Log.e(TAG, "Step 3 TIMEOUT (10s)")
+                    _binding?.tvTitle?.text = "Firmware cũ — cần update Tag"
+                    Toast.makeText(ctx, "Vui lòng update Tag firmware để dùng Friend Sharing", Toast.LENGTH_LONG).show()
                 }
                 else -> {
                     if (r.startsWith("BUNDLE_OK")) {
                         val friendId = r.split(":").getOrNull(1) ?: ""
-                        Log.i(TAG, "Step 3 OK ✓ → BUNDLE_OK friendId=$friendId")
-                        _binding?.tvTitle?.text = "Bundle OK — Tag đang kết nối Anchor"
+                        Log.i(TAG, "Step 3 OK: BUNDLE_OK friendId=$friendId")
                         Toast.makeText(ctx, "Bundle đã nạp vào Tag ($friendId)", Toast.LENGTH_SHORT).show()
+                        bundleOk = true
                     } else {
                         val reason = r.removePrefix("BUNDLE_ERR:")
-                        Log.e(TAG, "Step 3 FAIL: BUNDLE_ERR:$reason")
                         _binding?.tvTitle?.text = "Bundle lỗi: $reason"
                         Toast.makeText(ctx, "Tag từ chối bundle: $reason", Toast.LENGTH_LONG).show()
                     }
@@ -341,19 +333,84 @@ class BluetoothFragment : Fragment() {
             }
         }
 
-        if (oldFirmware) {
-            Log.e(TAG, "provisionFriendBundle: ABORT — firmware Tag cũ, cần update")
-            _binding?.tvTitle?.text = "Firmware cũ — cần update Tag"
-            Toast.makeText(
-                ctx,
-                "Vui lòng update Tag firmware để dùng tính năng Friend Sharing",
-                Toast.LENGTH_LONG
-            ).show()
-        }
+            // ── Chờ Anchor + monitor UWB ─────────────────────────────────────
+            if (bundleOk) {
+                _binding?.tvTitle?.text = "Tag đang tìm Anchor..."
+                Log.i(TAG, "Waiting for FRIEND_ACCESS_GRANTED (up to 120s)...")
 
-        Log.i(TAG, "provisionFriendBundle: END")
-        lineChannel.close()
-        restoreLogCallback()
+                val accessLine = withTimeoutOrNull(120_000L) {
+                    var line: String
+                    do { line = lineChannel.receive() }
+                    while (!line.startsWith("FRIEND_ACCESS_") && line != "DISCONNECTED")
+                    line
+                }
+
+                when {
+                    accessLine == null -> {
+                        _binding?.tvTitle?.text = "Timeout — Tag không tìm thấy Anchor"
+                        Toast.makeText(ctx, "Không kết nối được Anchor trong 2 phút", Toast.LENGTH_LONG).show()
+                    }
+                    accessLine.startsWith("FRIEND_ACCESS_DENIED") -> {
+                        _binding?.tvTitle?.text = "Anchor từ chối truy cập"
+                        Toast.makeText(ctx, "Bị từ chối truy cập", Toast.LENGTH_LONG).show()
+                    }
+                    accessLine == "FRIEND_ACCESS_GRANTED" -> {
+                        _binding?.tvTitle?.text = "Đã vào xe ✓"
+                        Toast.makeText(ctx, "Anchor chấp thuận truy cập!", Toast.LENGTH_SHORT).show()
+
+                        _binding?.layoutUwb?.visibility = View.VISIBLE
+                        _binding?.rvBluetooth?.visibility = View.GONE
+                        _binding?.tvUwbStatus?.text = "UWB đang đo khoảng cách..."
+
+                        try {
+                            while (true) {
+                                val event = withTimeoutOrNull(120_000L) { lineChannel.receive() } ?: break
+                                Log.d(TAG, "UWB event: $event")
+                                parseUwbEvent(event)
+                                if (event == "DISCONNECTED") break
+                            }
+                        } catch (_: Exception) {}
+
+                        _binding?.tvUwbStatus?.text = "Tag ngắt kết nối Anchor"
+                        _binding?.tvUwbZone?.text = ""
+                    }
+                    else -> {
+                        _binding?.tvTitle?.text = "Tag ngắt kết nối"
+                    }
+                }
+            }
+        } finally {
+            Log.i(TAG, "provisionFriendBundle: END")
+            lineChannel.close()
+            restoreLogCallback()
+        }
+    }
+
+    private fun parseUwbEvent(line: String) {
+        when {
+            line.startsWith("DIST:") -> {
+                val dist = line.removePrefix("DIST:")
+                _binding?.tvUwbDist?.text = dist
+            }
+            line.startsWith("UNLOCK:") -> {
+                val dist = line.removePrefix("UNLOCK:")
+                _binding?.tvUwbDist?.text = dist
+                _binding?.tvUwbZone?.text = "Trong vùng mở khóa ✓"
+                _binding?.tvUwbZone?.setTextColor(Color.parseColor("#388E3C"))
+                _binding?.tvUwbDist?.setTextColor(Color.parseColor("#388E3C"))
+            }
+            line.startsWith("LOCK:") -> {
+                val dist = line.removePrefix("LOCK:")
+                _binding?.tvUwbDist?.text = dist
+                _binding?.tvUwbZone?.text = "Ra khỏi vùng mở khóa"
+                _binding?.tvUwbZone?.setTextColor(Color.parseColor("#F57C00"))
+                _binding?.tvUwbDist?.setTextColor(Color.parseColor("#F57C00"))
+            }
+            line == "DISCONNECTED" -> {
+                _binding?.tvUwbStatus?.text = "Tag ngắt kết nối Anchor"
+                _binding?.tvUwbZone?.text = ""
+            }
+        }
     }
 
     private fun restoreLogCallback() {
