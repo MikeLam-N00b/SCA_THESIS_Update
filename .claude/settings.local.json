@@ -18,7 +18,9 @@
       "Read(//c/Users/Hieu Le/Documents/Arduino/libraries/**)",
       "Read(//c/Users/Hieu Le/.claude/plugins/**)",
       "Bash(tasklist /FI \"IMAGENAME eq arduino*\")",
-      "Bash(tasklist /FI \"IMAGENAME eq java*\")"
+      "Bash(tasklist /FI \"IMAGENAME eq java*\")",
+      "Bash(xargs wc *)",
+      "Bash(grep -E '\\\\.\\(h|ino\\)$')"
     ]
   },
   "enabledPlugins": {

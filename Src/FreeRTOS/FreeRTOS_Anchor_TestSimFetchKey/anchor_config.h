@@ -5,8 +5,8 @@
 // =============================================================================
 
 // ── WiFi key provisioning ─────────────────────────────────────────────────────
-#define WIFI_SSID        "Student"
-#define WIFI_PASSWORD    ""             // điền mật khẩu nếu có
+#define WIFI_SSID        "IU MUSICBOX"
+#define WIFI_PASSWORD    "iumusicboxcamon"             // điền mật khẩu nếu có
 
 // ── SIM Module key provisioning (dự phòng) ───────────────────────────────────
 #define SIM_RX_PIN       (8)
@@ -15,7 +15,7 @@
 #define SIM_APN          "v-internet"   // Viettel; Mobifone: "m-wap"; Vinaphone: "m3-world"
 
 #define VEHICLE_ID       "1HGBH41JXMN109186"
-#define SERVER_FALLBACK  "http://10.0.4.69:8000"
+#define SERVER_FALLBACK  "http://192.168.110.158:8000"
 
 // ── BLE ───────────────────────────────────────────────────────────────────────
 #define DEVICE_NAME         "SmartCar_Vehicle"

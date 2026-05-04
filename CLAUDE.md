@@ -1,477 +1,387 @@
-# Smart Car Access (SCA) — Project Context
+# CLAUDE.md — Smart Car Access (SCA) Friend Sharing
 
-> Đọc file này trước khi làm bất kỳ task nào trong project SCA.
+> **Mục đích file này**: Lưu trạng thái session làm việc với Claude (chat & Code).
+> Khi mở session mới, paste hoặc reference file này để context không bị mất.
+> Cập nhật mỗi khi hoàn thành milestone.
 
----
-
-## Kiến trúc tổng quan
-
-```
-Android App (Kotlin)
-    │ Retrofit2 HTTP
-    ▼
-FastAPI Server (Python) ──── SQLite (car_access.db)
-    │ HTTP (A7680C AT cmd)       vehicles, friend_keys tables
-    ▼
-Anchor ESP32-S3 (FreeRTOS)
-    │ BLE (GATT)
-    ▼
-Tag ESP32-S3 (FreeRTOS)
-    │ UWB SS-TWR (DW3000 STS)
-    └─ khoảng cách < ngưỡng → CAN unlock (MCP2515)
-```
-
-### Hai flow chính
-**Owner Flow**: Android → `/owner-pairing` → pairing_key → Anchor lưu NVS → BLE HMAC auth → UWB → CAN unlock
-
-**Friend Sharing Flow** *(đang phát triển)*:
-```
-Owner Android → POST /friend-sharing/create → claim_token
-Friend Android → GET /friend-sharing/claim/{token} → FriendKeyBundle (friend_key + ECDSA sig)
-Anchor → POST /validate-friend-key → verify sig → friend_key encrypted
-Tag ESP32 (friend) → decrypt → lưu NVS → HMAC auth với friend_key
-```
+**Project**: Smart Car Access — Đồ án tốt nghiệp HCMUTE 2026
+**Author**: Hiếu (Automotive Engineering Technology, embedded automotive software)
+**Last updated**: 2026-04-25
+**Defense timeline**: ~1 tháng từ ngày update này
 
 ---
 
-## [FIRMWARE] FreeRTOS Architecture
+## 1. Project Overview
 
-### Hardware (QUAN TRỌNG: DW3000 + MCP2515 share SPI2 bus)
-| Component | Chip      | Bus   | Role                        |
-|-----------|-----------|-------|-----------------------------|
-| Anchor    | ESP32-S3  | —     | BLE server, CAN controller  |
-| Tag       | ESP32-S3  | —     | BLE client, UWB initiator   |
-| UWB       | DW3000    | SPI2  | SS-TWR ranging, STS anti-relay |
-| CAN       | MCP2515   | SPI2  | UDS over CAN 100kbps        |
-| LTE       | A7680C    | UART2 | AT commands, HTTP POST      |
+### Architecture (4 components)
 
-### Task pinning (Anchor)
 ```
-Core 0: bleTask  (Priority 3) — BLE stack + HMAC auth
-Core 1: uwbTask  (Priority 4) — DW3000 timing-critical (HIGHEST)
-Core 1: canTask  (Priority 2) — MCP2515 CAN commands
-```
-
-### IPC primitives
-```c
-EventGroupHandle_t sysEvents;  // EVT_CONNECTED(0), EVT_AUTHED(1), EVT_UWB_ACTIVE(2)
-QueueHandle_t bleQueue;        // BleCmdMsg {type, data[32], dataLen}, depth 8
-QueueHandle_t uwbQueue;        // uint8_t {UWB_CMD_INIT, UWB_CMD_DEINIT}, depth 4
-QueueHandle_t canQueue;        // uint8_t {CAN_CMD_LOCK, CAN_CMD_UNLOCK}, depth 4
-SemaphoreHandle_t spiMutex;   // arbitrate DW3000 vs MCP2515
+┌──────────────────┐         ┌──────────────────┐
+│  Android App     │ HTTPS   │  Cloud Server    │
+│  (Owner+Guest)   │◀───────▶│  FastAPI v3      │
+└────────┬─────────┘         └────────┬─────────┘
+         │ USB Serial                  │ HTTPS
+         │ CDC/ACM 115200              │ (qua A7680C LTE)
+         ▼                             ▼
+┌──────────────────┐  BLE+UWB ┌──────────────────┐
+│ ESP32-S3 Tag     │◀────────▶│ ESP32 Anchor     │
+│ (key fob)        │          │ (in vehicle)     │
+│ DW3000 STS       │          │ MCP2515 CAN      │
+└──────────────────┘          └──────────────────┘
 ```
 
-### SPI mutex — BẮT BUỘC dùng khi truy cập DW3000 hoặc MCP2515
-```c
-if (xSemaphoreTake(spiMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
-    // DW3000 hoặc MCP2515 operation
-    xSemaphoreGive(spiMutex);
-} else {
-    Serial.println("[TASK] spiMutex timeout");
-    // handle error, KHÔNG crash
-}
-```
+### Tech Stack
 
-### BLE callback rule — callbacks chỉ được xQueueSend, KHÔNG xử lý logic
-```c
-// ĐÚNG
-void onWrite(BLECharacteristic* pChar) override {
-    BleCmdMsg msg = { .type = BLE_AUTH_VERIFY, .dataLen = 32 };
-    memcpy(msg.data, pChar->getData(), 32);
-    xQueueSend(bleQueue, &msg, pdMS_TO_TICKS(10));  // non-blocking
-}
-// SAI: tính toán HMAC, gọi CAN, delay trong callback → race condition / watchdog
-```
-
-### connectionGen pattern — tránh stale challenge
-```c
-// onConnect tăng connectionGen, đính kèm vào BLE_SEND_CHALLENGE
-// bleTask kiểm tra: if (myGen != connectionGen) break; // bỏ qua lệnh cũ
-```
-
-### Firmware coding rules (từ embedded-systems skill)
-- `volatile` cho mọi biến shared với ISR hoặc giữa tasks
-- `float` thay `double` — ESP32-S3 FPU chỉ hỗ trợ single-precision (double ~10x chậm)
-- `snprintf` thay `sprintf` — không ngoại lệ
-- `getData()/getLength()` thay `getValue()` trong BLE callbacks (zero-copy, no heap)
-- `memcmp` thay `String.startsWith()` trong callbacks (no String heap allocation)
-- ISR: chỉ set flag / send queue, KHÔNG xử lý logic, KHÔNG blocking call
-- `portYIELD_FROM_ISR(xHigherPriorityTaskWoken)` sau mọi `FromISR` API call
-- `configASSERT(uxTaskGetStackHighWaterMark(NULL) > 32)` trong debug builds
-
-### UWB STS anti-relay
-```c
-// Reload STS IV trước mỗi RX cycle để sync với Tag
-dwt_configurestsloadiv();
-// Kiểm tra STS quality — reject frame nếu invalid (relay attack)
-if (dwt_readstsquality(&stsQual) < 0) { dwt_forcetrxoff(); return; }
-// STS key = memcpy từ pairingKey (16 bytes) → cả Anchor & Tag dùng chung
-```
-
-### CAN (MCP2515) — deselect DW3000 trước khi dùng bus
-```c
-// Trong canTask, sau khi lấy spiMutex:
-if (xEventGroupGetBits(sysEvents) & EVT_UWB_ACTIVE) {
-    dwt_forcetrxoff();           // DW3000 idle
-    digitalWrite(PIN_SS, HIGH); // deselect DW3000 CS
-}
-// Sau đó mới gọi MCP2515 operations
-```
-
-### KHÔNG làm trong firmware
-- Blocking operations trong ISR
-- Dynamic allocation (`malloc`/`new`) không có bounds checking
-- Cross-core BLE `writeValue` từ Core 1 → dùng `bleWriteQueue`
-- NVS read/write từ ISR context
-- NVS key string > 15 chars (Preferences library limit)
-- `portMAX_DELAY` trừ khi có lý do rõ ràng trong comment
+- **Server**: Python FastAPI + SQLite + ECDSA P-256 + ECDH + AES-GCM
+- **Android App**: Kotlin + Retrofit + Fragment + ViewBinding + ZXing (QR)
+- **Tag firmware**: Arduino C++ on ESP32-S3 Super Mini, FreeRTOS, mbedTLS, DW3000
+- **Anchor firmware**: ESP-IDF C, FreeRTOS, BLE peripheral, mbedTLS, A7680C LTE
 
 ---
 
-## [SERVER] FastAPI + SQLite
+## 2. Status of Each Component
 
-### Database schema
-```sql
--- vehicles: xe đã pair
-CREATE TABLE vehicles (
-    vehicle_id TEXT PRIMARY KEY,
-    pairing_id TEXT NOT NULL,
-    pairing_key TEXT NOT NULL,  -- base64 encoded
-    created_at TEXT NOT NULL
-);
+### 2.1 Server (FastAPI v3) — ✅ COMPLETE
 
--- friend_keys: friend sharing
-CREATE TABLE friend_keys (
-    friend_id   TEXT PRIMARY KEY,
-    vehicle_id  TEXT NOT NULL,
-    friend_key  TEXT NOT NULL,
-    friend_name TEXT,
-    expires_at  TEXT NOT NULL,
-    owner_sig   TEXT NOT NULL,   -- ECDSA signature (base64)
-    is_revoked  INTEGER DEFAULT 0,
-    created_at  TEXT NOT NULL,
-    claim_token TEXT UNIQUE NOT NULL
-);
-```
+**File**: `main.py` (v3, 1299 lines)
+**Test file**: `test_flow.py` (18/18 pass)
 
-### API Endpoints
-| Method | Path | Mô tả |
-|--------|------|-------|
-| POST | `/secure-check-pairing` | Anchor fetch pairing key (ECDH P-256 + AES-GCM) |
-| POST | `/owner-pairing` | Android pair xe |
-| GET | `/check-pairing/{vehicle_id}` | Check pairing status |
-| GET | `/vehicle/{vehicle_id}` | Thông tin xe |
-| GET | `/vehicles` | Danh sách xe |
-| DELETE | `/vehicle/{vehicle_id}` | Xóa xe |
-| POST | `/friend-sharing/create` | Owner tạo friend share |
-| GET | `/friend-sharing/claim/{token}` | Friend lấy key bundle |
-| POST | `/validate-friend-key` | Anchor validate friend key |
-| DELETE | `/friend-sharing/{friend_id}` | Revoke friend key |
-| GET | `/friend-sharing/list/{vehicle_id}` | Danh sách friend keys |
-| GET | `/server-public-key` | Server ECDSA public key |
+**Endpoints implemented**:
+- Pairing: `POST /owner-pairing`, `POST /secure-check-pairing`, `GET /pairing-bootstrap`
+- Friend create: `POST /friend-sharing/create` (X-Owner-Key auth)
+- Friend claim: `GET /friend-sharing/claim/{token}` (single-use)
+- Friend list: `GET /friend-sharing/list/{vid}` (X-Owner-Key)
+- Friend revoke: `DELETE /friend-sharing/{fid}` (X-Owner-Key)
+- Anchor validate: `GET /validate-challenge/{vid}` + `POST /validate-friend-key` (X-Anchor-MAC + nonce)
+- Anchor usage: `POST /friend-used` (X-Anchor-MAC)
+- Anchor revocation poll: `GET /cars/{vid}/revocations?since=`
+- Activity log: `POST /cars/{vid}/activity` (X-Anchor-MAC), `GET /cars/{vid}/activity` (X-Owner-Key)
+- Utility: `GET /health`, `GET /server-public-key`
 
-### Crypto flow (Server)
-```
-/secure-check-pairing:
-  1. Anchor gửi: vehicle_id + client_public_key_b64 (ECDH P-256)
-  2. Server: ECDH shared secret → HKDF → KEK 16 bytes
-  3. Server: AES-128-GCM encrypt(pairing_key) → encrypted_data_b64 + nonce_b64
-  4. Server trả: server_public_key_b64 + encrypted_data_b64 + nonce_b64
+**Security implemented**:
+- Owner auth via `X-Owner-Key` header (`secrets.compare_digest`)
+- Anchor auth via HMAC-SHA256 over `{vehicle_id}|{timestamp}|{body_sha256_b64}` with `pairing_key`
+- ECDSA P-256 signature on friend bundles
+- Single-use claim tokens (marked claimed after first fetch)
+- Anti-replay nonces (single-use, 120s TTL) on validate endpoint
+- Constant-time signature compare
+- 5-min timestamp window on anchor requests
 
-/friend-sharing: ECDSA P-256 sign bundle:
-  message = f"{friend_id}:{vehicle_id}:{friend_key_hex}:{expires_at}"
-  signature = server_signing_key.sign(message, ECDSA(SHA256))
-```
+**TODO**: Deploy to Railway/Render with HTTPS. Backup `server_signing_key.pem` securely.
 
-### FastAPI coding rules (từ fastapi-expert skill)
-```python
-# ĐÚNG: Pydantic V2, sync endpoint (SQLite không async)
-class FriendShareCreateRequest(BaseModel):
-    vehicle_id: str
-    friend_name: str
-    ttl_hours: int = Field(gt=0, le=168)  # validate input
+### 2.2 Android App — ⏳ IN PROGRESS
 
-@app.post("/friend-sharing/create", response_model=FriendShareCreateResponse)
-def create_friend_share(req: FriendShareCreateRequest):
-    vehicle = get_vehicle_pairing(req.vehicle_id)
-    if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found")
-    ...
+**Existing code reviewed**: ~30 Kotlin files in `app/src/main/java/com/example/uwb/`
 
-# SAI: Pydantic V1 syntax
-# class Config: → dùng model_config = ModelConfig(...)
-# @validator → dùng @field_validator
-```
+**Existing structure**:
+- `Bluetooth/BluetoothFragment.kt` — BLE scan + USB Tag connection
+- `UI/FriendSharingFragment.kt` — QR create + scan (basic v1 implementation)
+- `transport/UsbTransport.kt` — CDC/ACM 115200 to Tag
+- `crypto/AesGcmUtil.kt`, `HKDF_SHA256.kt`, `GeneratePrivateKeyEcc.kt`
+- `dataLg/KeyManager.kt`, `FriendShareStore.kt`, `PairedDeviceStore.kt`
+- `network/ApiClient.kt`, `ApiService.kt` (v1 endpoints)
 
-### Python coding rules (từ python-pro skill)
-- Type hints cho mọi function signature
-- `X | None` thay `Optional[X]` (Python 3.10+)
-- Parameterized SQL queries — KHÔNG string concatenation
-- `secrets.token_hex()` cho token generation
-- Không expose sensitive data (pairing_key, sig) trong error messages
+**Brief written**: `android_app_brief.md` (paste to Claude Code)
 
-### KHÔNG làm trong server
-- Raw string SQL: `f"SELECT * WHERE id = {user_input}"` → SQL injection
-- Log pairing_key hoặc private key raw
-- Return internal exception details (stack trace) trong HTTP response
-- Dùng `SELECT *` trong production queries
+**Status**: Brief paste-ed to Claude Code, **answering clarifying questions** (round 2 in progress)
+
+**Pending Claude Code questions (already answered, ready to paste back)**:
+- Round 1: v3 API spec, USB transport flow, KeyManager namespace conflict, Owner revocation, FriendSharingFragment scope
+- Round 2: USB command format, server pubkey cache strategy, ECDSA verify fail action, OwnerFriendListFragment visibility
+
+**Next milestone**: Claude Code lists files to modify/create → review → confirm → implement
+
+### 2.3 Tag Firmware (ESP32-S3) — ⏳ TODO
+
+**Existing file**: `esp32_firmware/s3_super_mini_central/s3_super_mini_central.ino` (~740 lines)
+
+**Existing functionality**:
+- USB Serial parser (SET_KEY, DISCONNECT)
+- BLE Central scan + connect to Anchor
+- HMAC challenge-response auth with Anchor
+- DW3000 UWB ranging with STS encryption (uses pairing key as STS key)
+- FreeRTOS 3-task architecture (usbSerialTask, bleTask, uwbTask)
+
+**Brief written**: `tag_firmware_brief.md` (paste to Claude Code in separate session)
+
+**Status**: Not yet started — wait for Android App to finish first
+
+### 2.4 Anchor Firmware (ESP32 in vehicle) — ⏳ OPTIONAL
+
+**Brief written**: `anchor_extension_brief.md`
+
+**Status**: Lowest priority — can skip for thesis defense if time-constrained.
+
+**Rationale for deprioritizing**: Demo can show Server + App + Tag pipeline; Anchor revocation polling is a "nice to have" for the offline-first story but not critical for showing the cryptographic correctness.
 
 ---
 
-## [ANDROID] Kotlin App
+## 3. Key Decisions Made (and Why)
 
-### Package structure
-```
-com.example.uwb/
-├── UI/              # Fragments: Welcome, Login, EnterVin, VerifyingVin,
-│                    #   PairingLoading, VehicleInfo
-├── Bluetooth/       # BluetoothManager (BLE scan + GATT)
-├── network/         # ApiService (Retrofit suspend), ApiClient
-├── model/           # PairingRequest/Response, FriendShareRequest/Response,
-│                    #   FriendKeyBundle
-├── dataLg/          # KeyManager, PairedDeviceStore, FriendShareStore, SessionManager
-├── repository/      # PairingRepository, UsbRepository
-├── usb/             # USB OTG: UsbManagerHelper, UsbConnection, UsbConstants
-└── VinValid/        # VinValidator
-```
+### Decision 1: Offline-first with periodic sync (vs always-online)
 
-### KeyManager — pattern quan trọng nhất
-```kotlin
-// LUÔN check KeyManager trước khi gọi /owner-pairing
-// Server tạo key mới mỗi lần → Anchor vẫn giữ key cũ trong NVS → AUTH_FAIL
-fun pairVehicle(vin: String) {
-    val existingKey = KeyManager.loadPairingKey(vin)
-    if (existingKey != null) {
-        // Tái sử dụng — không gọi /owner-pairing
-        proceedWithExistingKey(existingKey)
-        return
-    }
-    // Chỉ gọi API nếu thực sự chưa có key
-    apiService.ownerPairing(PairingRequest(vin, pubKeyB64))
-}
-```
+**Decision**: Anchor verifies bundles offline using cached server public key. Periodic revocation poll every 5 minutes when LTE is available.
 
-### Kotlin coding rules (từ kotlin-specialist skill)
-```kotlin
-// ĐÚNG: structured concurrency với lifecycleScope
-lifecycleScope.launch {
-    try {
-        val response = withContext(Dispatchers.IO) {
-            apiService.createFriendShare(req)
-        }
-        // update UI trên Main dispatcher
-        updateUI(response)
-    } catch (e: Exception) {
-        handleError(e)
-    }
-}
+**Why**:
+- Latency: 300ms (offline) vs 3-10s (online every unlock)
+- Works in parking garages, basements, server downtime
+- 10x less data/battery than always-online
+- Industry standard: Tesla, BMW, Apple CarKey, CCC Digital Key 3.0 all do this
 
-// SAI
-GlobalScope.launch { ... }     // memory leak
-runBlocking { ... }            // blocks main thread
-val result = apiService.call() // blocking call on main thread
-```
+**Citations available**: CCC Digital Key 3.0, IEEE 1609.2-2022, V2X SCMS, multiple ACM VANET papers (2008-2009).
 
-### Kotlin KHÔNG làm
-- `!!` trừ khi contract đảm bảo non-null (comment lý do)
-- `GlobalScope.launch` → dùng `viewModelScope` hoặc `lifecycleScope`
-- Ignore coroutine cancellation (cancel parent scope on teardown)
-- Platform-specific code trong common modules (nếu sau này KMP)
+### Decision 2: ECDSA P-256 with server-side signing key (vs HMAC shared secret)
 
----
+**Decision**: Server signs bundles with private key; anchor verifies with cached public key.
 
-## [SECURITY] Checklist tích hợp
+**Why**:
+- Public-key crypto allows offline verification without sharing secrets
+- Compromised anchor cannot forge new bundles (would need server private key)
+- Industry standard for digital keys (Tesla uses ECDSA P-256 too)
+- Single point of failure: server private key — backup `server_signing_key.pem` is critical
 
-### Firmware security
-- [x] HMAC-SHA256 challenge-response (mbedTLS)
-- [x] STS mode 1 trên UWB — chống relay attack
-- [x] `connectionGen` — chống stale session replay
-- [ ] Constant-time HMAC compare (`mbedtls_ct_memcmp` thay `memcmp`)
-- [ ] Watchdog timer cho mỗi task
+### Decision 3: Permission bitmask scope (UNLOCK + LOCK only)
 
-### Server security
-- [x] ECDH P-256 + AES-128-GCM cho key exchange
-- [x] ECDSA P-256 sign friend bundle
-- [x] `secrets.token_hex()` cho claim_token
-- [x] `is_revoked` + TTL check
-- [ ] Rate limiting trên `/owner-pairing` và `/secure-check-pairing`
-- [ ] HTTPS (hiện HTTP) cho production
+**Decision**: Minimal permission set for thesis demo: `PERM_UNLOCK = 0x01`, `PERM_LOCK = 0x02`.
 
-### Android security
-- [x] SharedPreferences lưu pairing key
-- [ ] Android Keystore cho production (SharedPreferences không encrypted)
-- [ ] Certificate pinning cho Retrofit client
+**Why**:
+- 1-month timeline doesn't allow full permission matrix
+- Demonstrates the concept without scope creep
+- Easy to extend later (engine start, trunk, valet mode are obvious additions)
+- Mention extensibility as "future work" in thesis
 
----
+### Decision 4: USB Serial bridge (Phone → Tag) instead of BLE direct
 
-## Friend Sharing — Trạng thái hoàn chỉnh
+**Decision**: Phone communicates with Tag over USB CDC/ACM 115200; Tag does BLE/UWB to Anchor.
 
-### Status (2026-04-29)
+**Why**:
+- This is **already the existing architecture** in Hiếu's project — don't change it
+- Tag is a separate hardware device (key fob style) not the phone
+- Phone is just a bridge between cloud and Tag
+- Demonstrating UWB + STS encryption requires dedicated UWB hardware (DW3000 on Tag)
 
-| Layer | File | Trạng thái |
-|-------|------|-----------|
-| Server | `Server/main_2.py` | ✅ Hoàn chỉnh — dùng `main_2.py`, KHÔNG `main.py` |
-| Android model | `model/FriendKeyBundle.kt` | ✅ Đã fix fields: `issuer_sig_b64`, `bundle_version`, `permissions`, `issued_at` |
-| Android network | `network/ApiService.kt` | ✅ `createFriendShare`, `claimFriendShare`, `getServerPublicKey` |
-| Android UI | `UI/FriendSharingFragment.kt` | ✅ Owner tạo QR + Friend quét QR + claim bundle |
-| Android UI | `UI/OwnerFriendListFragment.kt` | ✅ Quản lý danh sách friend keys (revoke, xem) |
-| Android crypto | `crypto/EcdsaVerifier.kt` | ✅ Verify ECDSA trên Android trước khi nạp Tag |
-| Android provisioning | `Bluetooth/BluetoothFragment.kt` | ✅ USB provisioning: `SET_SERVER_PUBKEY`, `SET_TIME`, `SET_BUNDLE` |
-| Android manifest | `AndroidManifest.xml` | ✅ `launchMode="singleTop"` — fix USB attach reset back stack |
-| Anchor firmware | `FreeRTOS_Anchor_TestSimFetchKey.ino` | ✅ Hoàn chỉnh — KHÔNG cần sửa |
-| Tag firmware | `esp32_firmware/s3_super_mini_central/s3_super_mini_central.ino` | ✅ Friend mode đã implement |
+### Decision 5: KeyManager namespace separation (Owner vs Friend keys)
 
-### Friend Sharing Flow (hoàn chỉnh)
+**Decision**: Separate namespaces:
+- `owner_key_{vehicle_id}` — Owner pairing key (only when user pairs the vehicle)
+- `friend_key_{vehicle_id}_{friend_id}` — Friend bundle (multiple per vehicle)
 
-```
-Owner (phone A):
-  FriendSharingFragment → POST /friend-sharing/create → nhận claim_url → hiển thị QR
+**Why**:
+- **BUG in current code**: `KeyManager.savePairingKey(vid, fid, key)` overwrites owner key with friend key (same `key_{vid}` namespace)
+- A device can simultaneously be Owner of car A and Friend of car B
+- Required for proper multi-vehicle support
 
-Friend (phone B):
-  FriendSharingFragment → quét QR → GET /friend-sharing/claim/{token}
-  → EcdsaVerifier.verifyFriendBundle() (offline verify trên Android)
-  → navigate tới BluetoothFragment với ARG_FRIEND_BUNDLE_JSON
-  → cắm Tag vào USB
-  → BluetoothFragment.provisionFriendBundle():
-      1. SET_SERVER_PUBKEY <b64>  → Tag lưu NVS "sca_tag/srv_pub"
-      2. SET_TIME <epoch>         → Tag set RTC
-      3. SET_BUNDLE <b64json>     → Tag decode JSON → verify ECDSA → pack wire → lưu NVS
+### Decision 6: Single-use claim tokens (vs reusable)
 
-Tag (ESP32-S3):
-  isFriendMode = true → bleTask gọi connectAsFriend()
-  → scan BLE tìm FRIEND_SERVICE_UUID (0000FACE-...)
-  → write 195-byte binary bundle lên FRIEND_BUNDLE_CHAR_UUID (0000FA01-...)
-  → nhận binary notify [0x00, reason] từ FRIEND_STATUS_CHAR_UUID (0000FA03-...)
-  → Serial: "FRIEND_ACCESS_GRANTED" hoặc "FRIEND_ACCESS_DENIED"
+**Decision**: After first `GET /friend-sharing/claim/{token}`, server marks token as claimed; subsequent fetches return 410 Gone.
 
-Anchor (ESP32-S3):
-  BundleSubmitCallbacks.onWrite() → friendMgmtTask
-  → ft_parse_bundle_wire() → friend_token_verify() (offline: version, vehicle, perms, time, revocation, ECDSA)
-  → POST /validate-friend-key (online, cần WiFi, lần đầu)
-  → ble_notify_friend_status(): binary [accepted=0, reason]
-```
+**Why**:
+- Prevents token sharing/leakage (one Guest = one claim)
+- Owner can detect if Guest's phone was compromised (claim_token already used)
+- Standard practice for one-time secrets
 
-### Quy tắc quan trọng — KHÔNG được quên
+### Decision 7: Skip server reporting on local ECDSA fail
 
-**1. Tag firmware đúng đường dẫn:**
-```
-AndroidApp/esp32_firmware/s3_super_mini_central/s3_super_mini_central.ino
-KHÔNG phải: Src/FreeRTOS/FreeRTOS_Tag/FreeRTOS_Tag.ino  ← sai
-```
+**Decision**: When Android local ECDSA verify fails, show error toast and don't save bundle. Do NOT report failure to server.
 
-**2. Anchor gửi binary notification (KHÔNG phải string):**
-```c
-// Anchor gửi: uint8_t payload[2] = { accepted, reason }
-// accepted = 0 → OK; accepted != 0 → FAIL
-// Tag đọc: pData[0] == 0 → FRIEND_OK
-//          pData[0] != 0 → FRIEND_FAIL, reason = pData[1]
-```
+**Why**:
+- Most failures are benign (stale cached pubkey, app outdated, bug) — would flood server with false positives
+- Real attackers won't submit forged bundles for logging
+- Server-side anchor validate (Sequence 3) is the proper enforcement point
+- Privacy: avoid logging `friend_id` to server when not necessary
 
-**3. Bundle wire format (123 + sigLen bytes):**
-```
-[0]       version (1 byte)
-[1..8]    friend_id (8 bytes raw)
-[9..40]   vehicle_id (32 bytes, null-padded)
-[41..56]  friend_key (16 bytes raw)
-[57]      permissions (1 byte bitmask)
-[58..89]  issued_at_iso (32 bytes, null-padded)
-[90..121] expires_at_iso (32 bytes, null-padded)
-[122]     issuer_sig_len (1 byte)
-[123..]   issuer_sig DER (up to 72 bytes)
-```
+### Decision 8: 1 Android app with 2 modes (vs 2 separate apps)
 
-**4. Canonical message ECDSA (phải khớp server ↔ Tag ↔ Anchor):**
-```
-"v{version}|{friend_id_hex}|{vehicle_id}|{friend_key_hex}|{issued_at_iso}|{expires_at_iso}|{permissions}"
-```
+**Decision**: Single APK that handles both Owner and Guest roles based on stored credentials.
 
-**5. sendCmd trong BluetoothFragment phải dùng prefix filter:**
-```kotlin
-// Luôn pass expectedPrefix để skip debug lines từ Tag
-sendCmd("SET_SERVER_PUBKEY $b64", "SERVER_PUBKEY_")
-sendCmd("SET_TIME $epoch",        "TIME_")
-sendCmd("SET_BUNDLE $b64",        "BUNDLE_")
-```
-
-**6. Server: dùng `main_2.py`** — `main.py` thiếu `/validate-challenge`, `/friend-used`, `/cars/{vid}/revocations`
-
-**7. Anchor cần WiFi** khi validate bundle lần đầu (cache miss). Đảm bảo WiFi config đúng trong `anchor_config.h`.
-
-**8. UX flow đúng (friend device):**
-```
-Quét QR → app navigate BluetoothFragment (bundle JSON sẵn) → cắm Tag
-KHÔNG được cắm Tag trước → Android restart MainActivity → mất back stack
-(Đã fix bằng launchMode="singleTop" nhưng vẫn nên quét trước)
-```
-
-### Bước tiếp theo để test
-
-1. **Nạp Tag firmware** — Arduino IDE, file `s3_super_mini_central.ino`
-2. **Build & install Android app** — nhiều file đã thay đổi
-3. **Chạy server** — `python main_2.py` (không phải `main.py`)
-4. **Không cần nạp lại Anchor** — firmware đã đúng, NVS giữ nguyên pairing key
-5. **Test flow:**
-   - Owner: mở app → Friend Sharing → tạo QR (nhập tên + TTL)
-   - Friend: mở app → Friend Sharing → Quét QR → cắm Tag → chờ `BUNDLE_OK`
-   - Friend: đặt Tag gần Anchor → chờ `FRIEND_ACCESS_GRANTED`
+**Why**:
+- Same codebase, less duplication
+- Many users will be both Owner of own car + Guest of borrowed car
+- UI can hide Owner-only features (like "Manage Shares") when no owner key present
+- Demo is cleaner: 1 install per phone
 
 ---
 
-## File Structure
+## 4. Critical Cross-Component Specs
+
+These MUST match byte-exact across Server, App, Tag, Anchor:
+
+### Canonical Signed Message Format
 
 ```
-SCA/
-├── Src/FreeRTOS/
-│   └── FreeRTOS_Anchor_TestSimFetchKey/   # Anchor firmware (MAIN) — ESP32-S3 Anchor
-│       ├── FreeRTOS_Anchor_TestSimFetchKey.ino
-│       ├── anchor_config.h                # PIN defs, UUIDs, VEHICLE_ID, WiFi creds
-│       ├── friend_types.h                 # Wire format structs, constants
-│       ├── friend_token.h                 # ECDSA verify + bundle parser
-│       ├── friend_mgmt.h                  # Online validate, revocation sync
-│       ├── friend_revocation.h            # NVS blacklist
-│       ├── can_commands.h                 # CANCommands class
-│       └── can_frames.h                   # CAN frame definitions
-├── AndroidApp/
-│   ├── esp32_firmware/
-│   │   └── s3_super_mini_central/         # Tag firmware (MAIN) — ESP32-S3 Tag
-│   │       ├── s3_super_mini_central.ino  # ← File đúng cho Tag (KHÔNG dùng FreeRTOS_Tag)
-│   │       └── tag_config.h               # UUIDs, thresholds, wire constants
-│   └── app/src/main/java/com/example/uwb/
-│       ├── UI/                            # Fragments: Welcome, EnterVin, FriendSharing,
-│       │                                  #   OwnerFriendList, PairingLoading, VehicleInfo
-│       ├── Bluetooth/                     # BluetoothFragment (BLE scan + USB provisioning)
-│       ├── crypto/                        # EcdsaVerifier (Android-side bundle verify)
-│       ├── network/                       # ApiService, ApiClient
-│       ├── model/                         # FriendKeyBundle, FriendShareRequest/Response
-│       ├── dataLg/                        # KeyManager, ServerPublicKeyStore, FriendShareStore
-│       ├── adapter/                       # FriendShareAdapter (RecyclerView)
-│       └── repository/                    # PairingRepository
-├── Server/
-│   ├── main_2.py                          # FastAPI PRODUCTION — dùng cái này
-│   ├── main.py                            # Thiếu friend endpoints — KHÔNG dùng
-│   ├── car_access.db                      # SQLite
-│   └── friend_client.py                   # Test: Friend flow simulator
-├── lib/
-│   ├── Dw3000/                            # UWB driver library
-│   └── autowp-mcp2515/                    # CAN driver library
-└── Tools/
-    ├── nvs_clear.py                       # Xóa NVS flash (dùng khi cần reset Anchor)
-    └── view_keys.py                       # Xem keys trong NVS
+v{version}|{friend_id_hex}|{vehicle_id}|{friend_key_hex}|{issued_at_iso}|{expires_at_iso}|{permissions_decimal}
 ```
+
+Example:
+```
+v1|a73a9fc680b792e2|VH001|9ebf37a4b1fb0d138f...|2026-04-25T10:30:00.123456|2026-04-26T10:30:00.123456|1
+```
+
+**Rules**:
+- `version`: integer (e.g. `1`, not `01`)
+- `friend_id`: 16 lowercase hex chars
+- `vehicle_id`: ASCII string, no padding
+- `friend_key_hex`: 32 lowercase hex chars
+- `issued_at`, `expires_at`: ISO 8601 with microseconds (`%Y-%m-%dT%H:%M:%S.%f`)
+- `permissions`: decimal integer
+- Separator: `|` (pipe)
+- Encoding: UTF-8
+- Signature: ECDSA-with-SHA256, DER format
+
+### Permission Bitmask
+
+```
+PERM_UNLOCK = 0x01  (bit 0)
+PERM_LOCK   = 0x02  (bit 1)
+```
+
+### Bundle Wire Format (App → Tag over USB)
+
+195 bytes raw, base64-encoded (~328 chars). See `tag_firmware_brief.md` section C for byte layout.
+
+### USB Serial Commands (App → Tag)
+
+```
+SET_KEY:<32-hex>\n            (legacy owner mode)
+SET_BUNDLE:<base64>\n         (new v3 friend mode)
+SET_SERVER_PUBKEY:<base64>\n  (cache server ECDSA pubkey on Tag)
+SET_TIME:<unix>\n             (sync RTC since Tag has none)
+GET_STATUS\n                  (query state)
+DISCONNECT\n
+```
+
+### Anchor Authentication Header
+
+For protected endpoints, anchor includes:
+- `X-Anchor-Timestamp: <unix_seconds>`
+- `X-Anchor-MAC: <base64(HMAC-SHA256(pairing_key, "{vehicle_id}|{timestamp}|{body_sha256_b64}"))>`
+
+Server tolerance: ±5 minutes timestamp window.
 
 ---
 
-## Skills áp dụng theo task
+## 5. Recommended Implementation Order
 
-| Task | Skill |
-|------|-------|
-| Viết/sửa firmware C (FreeRTOS, SPI, BLE, UWB) | `embedded-systems` |
-| FastAPI endpoint, Pydantic model | `fastapi-expert` |
-| Python server code quality | `python-pro` |
-| SQLite queries, schema | `sql-pro` |
-| Android Kotlin, coroutines | `kotlin-specialist` |
-| Crypto/auth security | `secure-code-guardian` |
-| Security audit, vulnerability | `security-reviewer` |
-| REST API design | `api-designer` |
-| Code review bất kỳ | `code-reviewer` |
-| Debug lỗi bất kỳ | `debugging-wizard` |
+**Already done**: Server v3 ✅
+
+**Next 3 sessions** (in order):
+
+### Session A: Android App (3-4 days)
+
+1. Update Models for v3 schema
+2. Add `BundleVerifier.kt` for ECDSA local verify
+3. Add `X-Owner-Key` auth in API service
+4. Update `FriendSharingFragment` (permissions UI, TTL spinner, ECDSA verify)
+5. Refactor `KeyManager` (separate owner/friend namespaces)
+6. Create `OwnerFriendListFragment` (list + revoke)
+7. Add USB provisioning in `BluetoothFragment` (SET_SERVER_PUBKEY + SET_TIME + SET_BUNDLE)
+8. Test end-to-end with server (Postman + real APK)
+
+### Session B: Tag Firmware (2-3 days)
+
+1. Add bundle data structures + base64 parser
+2. Add ECDSA offline verify with mbedTLS
+3. Extend serial command parser (SET_BUNDLE, SET_SERVER_PUBKEY, SET_TIME, GET_STATUS)
+4. Add permission enforcement in UWB action loop
+5. Add backward-compat path (SET_KEY still works)
+6. Test with Python USB script + real bundle from server
+
+### Session C: Anchor Firmware (3-5 days, OPTIONAL)
+
+Skip if time-constrained. Demo can work without anchor revocation polling — anchor will only see bundles via BLE handshake from Tag, and Tag does the verification.
+
+If implementing:
+1. Component `friend_mgmt` skeleton + NVS schemas
+2. ECDSA verify offline (same canonical format)
+3. Revocation sync task (5-min poll)
+4. Cache miss online validate
+5. Activity reporting
+
+---
+
+## 6. Files Created in Sessions So Far
+
+### Source files (in `/mnt/user-data/outputs/`)
+- `main.py` — FastAPI server v3 (production-ready)
+- `test_flow.py` — End-to-end test script (18/18 scenarios)
+
+### Briefs (paste to Claude Code)
+- `README_briefs.md` — Overview + cross-component specs
+- `android_app_brief.md` — Android implementation brief
+- `tag_firmware_brief.md` — Tag firmware brief
+- `anchor_extension_brief.md` — Anchor firmware brief (optional)
+
+### This file
+- `CLAUDE.md` — Session memory (you are reading it)
+
+---
+
+## 7. Open Questions / Unresolved
+
+- [ ] **Production deployment URL** — currently `http://10.0.4.64:8000` (LAN). Need HTTPS public URL before demo (Railway/Render).
+- [ ] **Tag time sync source** — Tag has no RTC. Currently relies on `SET_TIME` from app each USB connect. Consider fetching from `/health` endpoint server time.
+- [ ] **Bundle version migration strategy** — if `bundle_version` increments in future, how do existing Tags handle it? Currently: reject. Future: backward-compat layer.
+- [ ] **Multi-vehicle Owner UX** — if user pairs 2+ vehicles, OwnerFriendListFragment needs vehicle selector (Spinner). Decided but not detailed.
+- [ ] **Anchor LTE provisioning** — assumed working. May need brief separately for LTE setup if anchor doesn't have it yet.
+
+---
+
+## 8. Defense-Ready Talking Points
+
+When defending the thesis, lead with these:
+
+### Why this design (the 60-second pitch)
+
+> "Hệ thống Friend Sharing được thiết kế theo nguyên tắc **offline-first** chuẩn của automotive industry, dùng ECDSA P-256 cho cryptographic verification và HMAC-SHA256 cho anchor authentication. Trade-off giữa revocation timeliness (5 phút) và offline availability tuân theo chuẩn CCC Digital Key 3.0 và IEEE 1609.2-2022. Defense-in-depth gồm 4 lớp: (1) cryptographic bundle signature, (2) UWB proximity ranging chống relay attack, (3) BLE pairing với HMAC challenge-response, (4) permission bitmask enforcement."
+
+### Key answers to anticipated questions
+
+**Q: Sao không dùng TLS/mTLS giữa anchor và server?**
+A: ESP32 + mbedTLS handshake overhead 5-8s trên LTE chậm; HTTP + ECDSA bundle signing đạt cùng mức integrity với overhead 1-2s. Future work: mutual TLS với certificate.
+
+**Q: Sao không check online mỗi lần unlock cho an toàn?**
+A: 3 lý do automotive: (1) latency 3-10s vs 300ms, (2) không work trong hầm xe/khi server down, (3) tốn pin và data 10x. Tesla, BMW, CCC chuẩn đều offline-first.
+
+**Q: Khi Owner revoke, Guest còn unlock được không?**
+A: Phụ thuộc trạng thái anchor. Online ≤5 phút qua → đã sync → reject. Offline lâu → có revocation gap, bounded bởi chu kỳ poll + fallback validate online khi cache miss.
+
+**Q: Server signing key bị leak thì sao?**
+A: Single point of failure trong design hiện tại. Mitigation roadmap: (1) key rotation, (2) HSM/Secure Element, (3) per-vehicle signing key.
+
+**Q: Replay attack trên BLE?**
+A: Bundle hiện chưa có nonce, có replay window trong TTL. Mitigation future work: challenge-response với 16-byte nonce từ anchor + HMAC(friend_key, nonce).
+
+---
+
+## 9. Next Steps for User
+
+**Immediate** (this week):
+1. Paste round 2 answers back to Claude Code (Android session)
+2. Let Claude Code list files to modify, review carefully
+3. Approve and let it implement
+
+**This month**:
+1. Finish Android implementation, test with deployed server
+2. Move to Tag firmware in separate Claude Code session
+3. End-to-end test: pair → create share → claim → USB to Tag → BLE to Anchor → unlock
+4. Record demo video (10 scenarios from `README_briefs.md`)
+5. Write thesis chapter using outline in earlier sessions
+
+**For Ampere job**:
+- Internship is concurrent. Friend Sharing project provides strong portfolio piece for embedded security skills.
+- Cite this project in interviews as evidence of automotive cybersecurity awareness (UN R155, ISO/SAE 21434).
+
+---
+
+## 10. Update Log
+
+| Date | What changed | Component |
+|------|--------------|-----------|
+| 2026-04-22 | Initial server v2 written and tested | Server |
+| 2026-04-22 | Server v3 with anchor auth + nonce | Server |
+| 2026-04-25 | All 3 component briefs written | Briefs |
+| 2026-04-25 | Session paused mid-Android-implementation | Android |
+
+---
+
+**End of CLAUDE.md** — When updating, increment date at top and add to Update Log.

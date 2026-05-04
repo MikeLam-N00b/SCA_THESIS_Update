@@ -138,31 +138,19 @@ static esp_err_t friend_mgmt_validate_online(
     char nonce[33];
     if (fm_get_nonce(server_base, vehicle_id, nonce) != ESP_OK) return ESP_FAIL;
 
-    // Build validate request body
-    char friend_id_hex[FRIEND_ID_LEN  * 2 + 1];
-    char friend_key_hex[FRIEND_KEY_LEN * 2 + 1];
-    ft_bytes_to_hex(bundle->friend_id,  FRIEND_ID_LEN,  friend_id_hex);
-    ft_bytes_to_hex(bundle->friend_key, FRIEND_KEY_LEN, friend_key_hex);
+    // Base64-encode the 106-byte bundle for JSON transport
+    char bundle_b64[200]; size_t b64len;
+    mbedtls_base64_encode((unsigned char *)bundle_b64, sizeof(bundle_b64), &b64len,
+                          bundle->raw, BUNDLE_BIN_SIZE);
+    bundle_b64[b64len] = '\0';
 
-    // Base64-encode the DER signature for JSON transport
-    char sig_b64[128]; size_t sig_b64_len;
-    mbedtls_base64_encode((unsigned char *)sig_b64, sizeof(sig_b64), &sig_b64_len,
-                          bundle->issuer_sig, bundle->issuer_sig_len);
-    sig_b64[sig_b64_len] = '\0';
+    // Minimal request: vehicle_id + nonce + bundle_b64
+    StaticJsonDocument<512> req;
+    req["vehicle_id"] = vehicle_id;
+    req["nonce"]      = nonce;
+    req["bundle_b64"] = bundle_b64;
 
-    // StaticJsonDocument for the request (estimated size ≈ 450 bytes)
-    StaticJsonDocument<768> req;
-    req["vehicle_id"]     = vehicle_id;
-    req["friend_id"]      = friend_id_hex;
-    req["version"]        = bundle->version;
-    req["friend_key_hex"] = friend_key_hex;
-    req["issued_at"]      = bundle->issued_at_iso;
-    req["expires_at"]     = bundle->expires_at_iso;
-    req["permissions"]    = bundle->permissions;
-    req["issuer_sig_b64"] = sig_b64;
-    req["nonce"]          = nonce;
-
-    char body[768];
+    char body[512];
     serializeJson(req, body, sizeof(body));
 
     char url[256];

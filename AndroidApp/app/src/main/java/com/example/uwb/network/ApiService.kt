@@ -6,13 +6,18 @@ import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.Path
-import com.example.uwb.model.FriendKeyBundle
 import com.example.uwb.model.FriendListResponse
 import com.example.uwb.model.FriendShareRequest
 import com.example.uwb.model.FriendShareResponse
 import com.example.uwb.model.PairingRequest
 import com.example.uwb.model.PairingResponse
 import com.example.uwb.model.ServerPublicKeyResponse
+
+data class FriendBundleResponse(
+    val bundle_b64: String,
+    val vehicle_id: String,
+    val friend_name: String
+)
 
 interface ApiService {
 
@@ -30,7 +35,7 @@ interface ApiService {
     @GET("/friend-sharing/claim/{token}")
     suspend fun claimFriendShare(
         @Path("token") token: String
-    ): FriendKeyBundle
+    ): FriendBundleResponse
 
     @DELETE("/friend-sharing/{friend_id}")
     suspend fun revokeFriendShare(

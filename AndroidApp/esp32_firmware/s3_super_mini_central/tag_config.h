@@ -70,8 +70,7 @@
 // Friend Sharing — wire format constants (phải khớp với friend_types.h của Anchor)
 // =============================================================================
 #define FRIEND_ID_LEN           8     // bytes (16 hex chars)
-#define VEHICLE_ID_MAX_LEN      32    // bytes including null terminator
 #define FRIEND_KEY_LEN          16    // bytes
-#define ECDSA_SIG_DER_MAX       72    // P-256 DER max 72 bytes
-#define BUNDLE_WIRE_HEADER_LEN  123   // bytes before signature field
-#define BUNDLE_WIRE_MAX_LEN     (BUNDLE_WIRE_HEADER_LEN + ECDSA_SIG_DER_MAX)
+#define BUNDLE_BIN_SIZE         106   // fixed 106-byte binary bundle
+#define BUNDLE_SIGNED_PART      42    // signed_part = bytes[0..41]
+#define BUNDLE_SIG_SIZE         64    // raw r||s = bytes[42..105]

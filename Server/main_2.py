@@ -34,7 +34,9 @@ import secrets
 import sqlite3
 import socket
 import json
+import struct
 import time
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature, encode_dss_signature
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -114,63 +116,60 @@ def get_server_public_key_b64() -> str:
     return base64.b64encode(pub_bytes).decode()
 
 
-def _friend_bundle_message(
-    version: int,
-    friend_id: str,
-    vehicle_id: str,
-    friend_key_hex: str,
-    issued_at: str,
-    expires_at: str,
+def _build_bundle_signed_part(
+    bundle_version: int,
+    friend_id: bytes,       # 8 bytes binary
+    vehicle_id_hash: bytes, # 8 bytes = SHA-256(VIN)[:8]
+    friend_key: bytes,      # 16 bytes binary
+    issued_at: int,         # epoch seconds
+    expires_at: int,        # epoch seconds
     permissions: int,
 ) -> bytes:
-    """
-    Canonical signed message.
-
-    CRITICAL: This exact byte layout must match the anchor's reconstruction.
-    Any change here = firmware rebuild required.
-
-    Format:
-      "v{version}|{friend_id}|{vehicle_id}|{friend_key_hex}|{issued_at}|{expires_at}|{permissions}"
-
-    We use '|' separator instead of ':' because ISO timestamps contain ':'
-    which would make parsing harder on the anchor side.
-    """
-    return (
-        f"v{version}|{friend_id}|{vehicle_id}|{friend_key_hex}"
-        f"|{issued_at}|{expires_at}|{permissions}"
-    ).encode()
+    """Build the 42-byte signed part of the binary bundle (big-endian struct)."""
+    return struct.pack(
+        ">B8s8s16sIIB",
+        bundle_version,
+        friend_id,
+        vehicle_id_hash,
+        friend_key,
+        issued_at,
+        expires_at,
+        permissions,
+    )
 
 
-def sign_friend_bundle(
-    friend_id: str,
+def sign_friend_bundle_binary(
+    friend_id: bytes,
     vehicle_id: str,
-    friend_key_hex: str,
-    issued_at: str,
-    expires_at: str,
+    friend_key: bytes,
+    issued_at: int,
+    expires_at: int,
     permissions: int,
 ) -> bytes:
-    msg = _friend_bundle_message(
-        BUNDLE_VERSION, friend_id, vehicle_id, friend_key_hex,
+    """Sign the bundle and return the full 106-byte bundle (signed_part[42] + raw_sig[64])."""
+    vehicle_id_hash = hashlib.sha256(vehicle_id.encode()).digest()[:8]
+    signed_part = _build_bundle_signed_part(
+        BUNDLE_VERSION, friend_id, vehicle_id_hash, friend_key,
         issued_at, expires_at, permissions,
     )
-    return get_server_signing_key().sign(msg, ec.ECDSA(hashes.SHA256()))
+    sig_der = get_server_signing_key().sign(signed_part, ec.ECDSA(hashes.SHA256()))
+    r, s = decode_dss_signature(sig_der)
+    sig_raw = r.to_bytes(32, 'big') + s.to_bytes(32, 'big')
+    return signed_part + sig_raw  # 42 + 64 = 106 bytes
 
 
-def verify_friend_bundle_sig(
-    friend_id: str,
-    vehicle_id: str,
-    friend_key_hex: str,
-    issued_at: str,
-    expires_at: str,
-    permissions: int,
-    sig: bytes,
-) -> bool:
-    msg = _friend_bundle_message(
-        BUNDLE_VERSION, friend_id, vehicle_id, friend_key_hex,
-        issued_at, expires_at, permissions,
-    )
+def verify_friend_bundle_binary(bundle_bytes: bytes) -> bool:
+    """Verify the ECDSA signature on a 106-byte binary bundle."""
+    if len(bundle_bytes) != 106:
+        return False
+    signed_part = bundle_bytes[:42]
+    r = int.from_bytes(bundle_bytes[42:74], 'big')
+    s = int.from_bytes(bundle_bytes[74:106], 'big')
     try:
-        get_server_signing_key().public_key().verify(sig, msg, ec.ECDSA(hashes.SHA256()))
+        sig_der = encode_dss_signature(r, s)
+        get_server_signing_key().public_key().verify(
+            sig_der, signed_part, ec.ECDSA(hashes.SHA256())
+        )
         return True
     except Exception:
         return False
@@ -406,6 +405,8 @@ def init_db():
         cursor.execute("ALTER TABLE friend_keys ADD COLUMN claimed INTEGER DEFAULT 0")
     if "claimed_at" not in cols:
         cursor.execute("ALTER TABLE friend_keys ADD COLUMN claimed_at TEXT")
+    if "bundle_b64" not in cols:
+        cursor.execute("ALTER TABLE friend_keys ADD COLUMN bundle_b64 TEXT")
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS access_events (
@@ -489,18 +490,20 @@ def verify_owner_auth(vehicle_id: str, x_owner_key: Optional[str]) -> dict:
 def db_create_friend_key(
     vehicle_id: str, friend_name: str, ttl_hours: int, permissions: int,
 ) -> dict:
-    # friend_id is canonical: 16 hex chars (8 random bytes)
-    friend_id = secrets.token_hex(8)
-    friend_key = os.urandom(16)
-    friend_key_hex = friend_key.hex()
-    issued_at = utcnow_iso()
-    expires_at = (naive_now() + timedelta(hours=ttl_hours)).isoformat()
+    friend_id_bytes = secrets.token_bytes(8)
+    friend_id = friend_id_bytes.hex()              # 16 hex chars stored in DB
+    friend_key = secrets.token_bytes(16)
+    issued_at_epoch = int(time.time())
+    expires_at_epoch = issued_at_epoch + ttl_hours * 3600
+    issued_at = datetime.utcfromtimestamp(issued_at_epoch).isoformat()
+    expires_at = datetime.utcfromtimestamp(expires_at_epoch).isoformat()
     claim_token = secrets.token_urlsafe(24)
 
-    sig_bytes = sign_friend_bundle(
-        friend_id, vehicle_id, friend_key_hex, issued_at, expires_at, permissions,
+    bundle_bytes = sign_friend_bundle_binary(
+        friend_id_bytes, vehicle_id, friend_key,
+        issued_at_epoch, expires_at_epoch, permissions,
     )
-    issuer_sig = base64.b64encode(sig_bytes).decode()
+    bundle_b64 = base64.b64encode(bundle_bytes).decode()
 
     conn = sqlite3.connect('car_access.db')
     cursor = conn.cursor()
@@ -508,12 +511,12 @@ def db_create_friend_key(
         INSERT INTO friend_keys
             (friend_id, vehicle_id, friend_key, friend_name, permissions,
              issued_at, expires_at, issuer_sig, is_revoked,
-             claim_token, claimed, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?)
+             claim_token, claimed, created_at, bundle_b64)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)
     ''', (friend_id, vehicle_id,
           base64.b64encode(friend_key).decode(), friend_name, permissions,
-          issued_at, expires_at, issuer_sig,
-          claim_token, utcnow_iso()))
+          issued_at, expires_at, bundle_b64,
+          claim_token, utcnow_iso(), bundle_b64))
     conn.commit()
     conn.close()
 
@@ -531,7 +534,7 @@ def db_get_friend_by_token(claim_token: str) -> Optional[dict]:
     cursor = conn.cursor()
     cursor.execute('''
         SELECT friend_id, vehicle_id, friend_key, friend_name, permissions,
-               issued_at, expires_at, issuer_sig, is_revoked, claimed, created_at
+               issued_at, expires_at, issuer_sig, is_revoked, claimed, created_at, bundle_b64
         FROM friend_keys WHERE claim_token = ?
     ''', (claim_token,))
     r = cursor.fetchone()
@@ -543,7 +546,7 @@ def db_get_friend_by_token(claim_token: str) -> Optional[dict]:
         "friend_key": base64.b64decode(r[2]), "friend_name": r[3],
         "permissions": r[4], "issued_at": r[5], "expires_at": r[6],
         "issuer_sig": r[7], "is_revoked": r[8], "claimed": r[9],
-        "created_at": r[10],
+        "created_at": r[10], "bundle_b64": r[11],
     }
 
 
@@ -552,7 +555,7 @@ def db_get_friend_by_id(friend_id: str) -> Optional[dict]:
     cursor = conn.cursor()
     cursor.execute('''
         SELECT friend_id, vehicle_id, friend_key, friend_name, permissions,
-               issued_at, expires_at, issuer_sig, is_revoked, uses_count, created_at
+               issued_at, expires_at, issuer_sig, is_revoked, uses_count, created_at, bundle_b64
         FROM friend_keys WHERE friend_id = ?
     ''', (friend_id,))
     r = cursor.fetchone()
@@ -564,7 +567,7 @@ def db_get_friend_by_id(friend_id: str) -> Optional[dict]:
         "friend_key": base64.b64decode(r[2]), "friend_name": r[3],
         "permissions": r[4], "issued_at": r[5], "expires_at": r[6],
         "issuer_sig": r[7], "is_revoked": r[8], "uses_count": r[9],
-        "created_at": r[10],
+        "created_at": r[10], "bundle_b64": r[11],
     }
 
 
@@ -656,6 +659,13 @@ class FriendShareCreateResponse(BaseModel):
     permissions: int
 
 
+class FriendBundleResponse(BaseModel):
+    """106-byte binary bundle returned to Guest on claim. Opaque to client."""
+    bundle_b64: str
+    vehicle_id: str
+    friend_name: str
+
+
 class FriendKeyBundle(BaseModel):
     """The complete bundle given to Guest. Guest stores & presents to anchor."""
     bundle_version: int
@@ -676,9 +686,8 @@ class ChallengeResponse(BaseModel):
 
 class ValidateFriendKeyRequest(BaseModel):
     vehicle_id: str
-    friend_id: str
     nonce: str  # from /validate-challenge, anti-replay
-    issuer_sig_b64: str
+    bundle_b64: str  # full 106-byte binary bundle, base64-encoded
 
 
 class ValidateFriendKeyResponse(BaseModel):
@@ -1018,10 +1027,10 @@ def list_friend_keys(
 #  Sequence 2: Guest claims bundle (one-time)
 # ============================================================
 
-@app.get("/friend-sharing/claim/{claim_token}", response_model=FriendKeyBundle)
+@app.get("/friend-sharing/claim/{claim_token}", response_model=FriendBundleResponse)
 def claim_friend_key(claim_token: str):
     """
-    Guest one-time claim of the key bundle.
+    Guest one-time claim of the key bundle (106-byte binary, base64-encoded).
     After first fetch, claim_token is marked 'claimed' and subsequent fetches
     return 410 Gone. This prevents token sharing/leakage.
     """
@@ -1034,6 +1043,8 @@ def claim_friend_key(claim_token: str):
         raise HTTPException(status_code=410, detail="This share has been revoked")
     if naive_now() > datetime.fromisoformat(data["expires_at"]):
         raise HTTPException(status_code=410, detail="This share has expired")
+    if not data.get("bundle_b64"):
+        raise HTTPException(status_code=410, detail="Bundle not available — re-create share")
 
     # Mark as claimed (single-use)
     db_mark_claimed(claim_token)
@@ -1041,16 +1052,10 @@ def claim_friend_key(claim_token: str):
     log_event(data["vehicle_id"], data["friend_id"], "FRIEND_CLAIMED", "OK")
     print(f"✓ Claimed: {data['friend_id']}")
 
-    return FriendKeyBundle(
-        bundle_version=BUNDLE_VERSION,
-        friend_id=data["friend_id"],
+    return FriendBundleResponse(
+        bundle_b64=data["bundle_b64"],
         vehicle_id=data["vehicle_id"],
-        friend_key_hex=data["friend_key"].hex(),
         friend_name=data["friend_name"] or "Friend",
-        permissions=data["permissions"],
-        issued_at=data["issued_at"],
-        expires_at=data["expires_at"],
-        issuer_sig_b64=data["issuer_sig"],
     )
 
 
@@ -1098,43 +1103,46 @@ async def validate_friend_key(
     body_digest = body_sha256_b64(body_str)
     require_anchor_auth(req.vehicle_id, x_anchor_mac, x_anchor_timestamp, body_digest)
 
+    # Decode and validate bundle size
+    try:
+        bundle_bytes = base64.b64decode(req.bundle_b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid bundle_b64 encoding")
+    if len(bundle_bytes) != 106:
+        raise HTTPException(status_code=400, detail="Invalid bundle size (expected 106 bytes)")
+
+    # Extract friend_id from bundle bytes[1..8]
+    friend_id_bytes = bundle_bytes[1:9]
+    friend_id_hex = friend_id_bytes.hex()
+
     # Anti-replay via nonce
     if not consume_nonce(req.vehicle_id, req.nonce):
-        log_event(req.vehicle_id, req.friend_id, "VALIDATE", "BAD_NONCE")
+        log_event(req.vehicle_id, friend_id_hex, "VALIDATE", "BAD_NONCE")
         raise HTTPException(status_code=401, detail="Invalid or expired nonce")
 
-    data = db_get_friend_by_id(req.friend_id)
+    data = db_get_friend_by_id(friend_id_hex)
     if not data:
-        log_event(req.vehicle_id, req.friend_id, "VALIDATE", "NOT_FOUND")
+        log_event(req.vehicle_id, friend_id_hex, "VALIDATE", "NOT_FOUND")
         raise HTTPException(status_code=404, detail="Friend key not found")
 
     if data["vehicle_id"] != req.vehicle_id:
-        log_event(req.vehicle_id, req.friend_id, "VALIDATE", "WRONG_VEHICLE")
+        log_event(req.vehicle_id, friend_id_hex, "VALIDATE", "WRONG_VEHICLE")
         raise HTTPException(status_code=403, detail="Friend key does not belong to this vehicle")
 
     if data["is_revoked"]:
-        log_event(req.vehicle_id, req.friend_id, "VALIDATE", "REVOKED")
+        log_event(req.vehicle_id, friend_id_hex, "VALIDATE", "REVOKED")
         raise HTTPException(status_code=401, detail="key revoked")
 
     if naive_now() > datetime.fromisoformat(data["expires_at"]):
-        log_event(req.vehicle_id, req.friend_id, "VALIDATE", "EXPIRED")
+        log_event(req.vehicle_id, friend_id_hex, "VALIDATE", "EXPIRED")
         raise HTTPException(status_code=401, detail="key expired")
 
-    try:
-        sig_bytes = base64.b64decode(req.issuer_sig_b64)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid signature format")
+    if not verify_friend_bundle_binary(bundle_bytes):
+        log_event(req.vehicle_id, friend_id_hex, "VALIDATE", "BAD_SIG")
+        raise HTTPException(status_code=401, detail="Invalid bundle signature")
 
-    if not verify_friend_bundle_sig(
-        data["friend_id"], data["vehicle_id"],
-        data["friend_key"].hex(), data["issued_at"], data["expires_at"],
-        data["permissions"], sig_bytes,
-    ):
-        log_event(req.vehicle_id, req.friend_id, "VALIDATE", "BAD_SIG")
-        raise HTTPException(status_code=401, detail="Invalid issuer signature")
-
-    log_event(req.vehicle_id, req.friend_id, "VALIDATE", "OK")
-    print(f"✓ Validated: {req.friend_id} perms=0x{data['permissions']:02X}")
+    log_event(req.vehicle_id, friend_id_hex, "VALIDATE", "OK")
+    print(f"✓ Validated: {friend_id_hex} perms=0x{data['permissions']:02X}")
 
     return ValidateFriendKeyResponse(
         valid=True,

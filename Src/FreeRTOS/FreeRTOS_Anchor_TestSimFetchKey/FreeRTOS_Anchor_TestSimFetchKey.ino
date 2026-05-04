@@ -92,7 +92,7 @@ static BLECharacteristic *pAuthCharacteristic      = nullptr;
 // Friend sharing — BLE characteristics and bundle receive state
 static BLECharacteristic *pBundleSubmitChar = nullptr;  // Write
 static BLECharacteristic *pFriendStatusChar = nullptr;  // Notify
-static uint8_t   s_bundleBuf[BUNDLE_WIRE_MAX_LEN];
+static uint8_t   s_bundleBuf[BUNDLE_BIN_SIZE];
 static size_t    s_bundleBufLen = 0;
 static MCP2515*     pMcp2515    = nullptr;
 static CANCommands* pCanControl = nullptr;
@@ -904,19 +904,15 @@ class BundleSubmitCallbacks : public BLECharacteristicCallbacks {
         memcpy(s_bundleBuf + s_bundleBufLen, data, toCopy);
         s_bundleBufLen += toCopy;
 
-        // Need at least the fixed header before we can read sig_len
-        if (s_bundleBufLen < BUNDLE_WIRE_HEADER_LEN) return;
-
-        uint8_t sig_len = s_bundleBuf[122];
-        size_t  expected = BUNDLE_WIRE_HEADER_LEN + sig_len;
-        if (s_bundleBufLen < expected) return;  // still waiting for more fragments
+        // Bundle is exactly BUNDLE_BIN_SIZE (106) bytes — fixed format, no length field
+        if (s_bundleBufLen < BUNDLE_BIN_SIZE) return;  // accumulating fragments
 
         // Full bundle received — parse and hand off to task
         friend_bundle_t bundle;
-        if (ft_parse_bundle_wire(s_bundleBuf, s_bundleBufLen, &bundle)) {
+        if (ft_parse_bundle_wire(s_bundleBuf, BUNDLE_BIN_SIZE, &bundle)) {
             BaseType_t sent = xQueueSend(bundleQueue, &bundle, pdMS_TO_TICKS(10));
-            Serial.printf("[BLE] Bundle queued=%d sig_len=%u id=%02x%02x...\n",
-                          (int)sent, sig_len,
+            Serial.printf("[BLE] Bundle queued=%d id=%02x%02x...\n",
+                          (int)sent,
                           bundle.friend_id[0], bundle.friend_id[1]);
         } else {
             Serial.println("[BLE] Bundle parse failed — discarding");
@@ -1372,12 +1368,10 @@ static void friendMgmtTask(void *param) {
             for (int i = 0; i < FRIEND_KEY_LEN; i++) snprintf(fkey_hex + i*2, 3, "%02x", bundle.friend_key[i]);
             Serial.printf("[FRIEND] === Bundle received ===\n");
             Serial.printf("[FRIEND]   friend_id  : %s\n", fid_hex);
-            Serial.printf("[FRIEND]   vehicle_id : %s\n", bundle.vehicle_id);
             Serial.printf("[FRIEND]   friend_key : %s\n", fkey_hex);
             Serial.printf("[FRIEND]   permissions: 0x%02X\n", bundle.permissions);
-            Serial.printf("[FRIEND]   issued_at  : %s (%lu)\n", bundle.issued_at_iso,  (unsigned long)bundle.issued_at);
-            Serial.printf("[FRIEND]   expires_at : %s (%lu)\n", bundle.expires_at_iso, (unsigned long)bundle.expires_at);
-            Serial.printf("[FRIEND]   sig_len    : %u bytes\n", (unsigned)bundle.issuer_sig_len);
+            Serial.printf("[FRIEND]   issued_at  : %lu\n", (unsigned long)bundle.issued_at);
+            Serial.printf("[FRIEND]   expires_at : %lu\n", (unsigned long)bundle.expires_at);
         }
 
         // Guard: require a synced clock for time-based checks

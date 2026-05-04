@@ -2,7 +2,7 @@
  * ESP32-S3 Super Mini — BLE Central + UWB Tag  (FreeRTOS)
  * ─────────────────────────────────────────────────────────
  * Owner mode: Android gửi SET_KEY:<hex> → scan Anchor → HMAC auth → UWB ranging
- * Friend mode: Android gửi SET_SERVER_PUBKEY / SET_TIME / SET_BUNDLE
+ * Friend mode: Android gửi SET_SERVER_PUBKEY / SET_TIME / SET_BUNDLE_BIN
  *              → Tag verify ECDSA offline → connect Anchor friend service
  *              → Anchor verify online → nhận binary status [accepted, reason]
  *
@@ -13,7 +13,7 @@
  *   Friend mode:
  *     "SET_SERVER_PUBKEY <b64>\n"  → lưu server ECDSA public key vào NVS
  *     "SET_TIME <epoch>\n"         → đặt RTC (cần cho ECDSA time check)
- *     "SET_BUNDLE <b64json>\n"     → parse + verify + nạp friend bundle
+ *     "SET_BUNDLE_BIN <b64>\n"     → parse 106-byte binary + verify ECDSA + nạp friend bundle
  *
  * USB Serial responses:
  *   "READY"                          → khởi động xong, chờ lệnh
@@ -43,6 +43,8 @@
 #include <BLEAdvertisedDevice.h>
 #include <mbedtls/md.h>
 #include <mbedtls/pk.h>
+#include <mbedtls/ecdsa.h>
+#include <mbedtls/ecp.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/base64.h>
 #include <Preferences.h>
@@ -94,7 +96,7 @@ static volatile bool authFailed      = false;  // AUTH_FAIL → chờ SET_KEY m�
 // ── Friend mode ───────────────────────────────────────────────────────────────
 static volatile bool isFriendMode       = false;
 static uint8_t       friendKey[FRIEND_KEY_LEN] = {};
-static uint8_t       s_bundleWire[BUNDLE_WIRE_MAX_LEN] = {};
+static uint8_t       s_bundleWire[BUNDLE_BIN_SIZE] = {};
 static size_t        s_bundleWireLen    = 0;
 // Anchor gửi binary [0]=0 accepted / 1+ rejected, [1]=reason
 static volatile bool s_friendAccepted   = false;
@@ -205,75 +207,90 @@ static size_t nvsLoadServerPubkey(uint8_t* out, size_t maxLen) {
     return stored;
 }
 
-static void nvsSaveBundleWire(const uint8_t* wire, size_t len) {
+static void nvsSaveBundleBinary(const uint8_t* bundle, size_t len) {
+    if (len != BUNDLE_BIN_SIZE) return;
     Preferences p;
     if (!p.begin("sca_tag", false)) return;
-    p.putBytes("friend_wire", wire, len);
-    p.putUInt("friend_len", (uint32_t)len);
+    p.putBytes("friend_bin", bundle, len);
     p.end();
 }
 
-static bool nvsLoadBundleWire() {
+static bool nvsLoadBundleBinary() {
     Preferences p;
     if (!p.begin("sca_tag", true)) return false;
-    uint32_t len = p.getUInt("friend_len", 0);
-    if (len == 0 || len > BUNDLE_WIRE_MAX_LEN) { p.end(); return false; }
-    p.getBytes("friend_wire", s_bundleWire, len);
-    s_bundleWireLen = len;
+
+    // Migration: nếu thấy NVS định dạng cũ (friend_wire) thì erase
+    // getBytesLength() trả 0 nếu key không tồn tại — universal across core versions
+    size_t oldLen = p.getBytesLength("friend_wire");
+    if (oldLen > 0) {
+        p.end();
+        Preferences pw;
+        if (pw.begin("sca_tag", false)) {
+            pw.remove("friend_wire");
+            pw.remove("friend_len");
+            pw.end();
+        }
+        Serial.println("[NVS] Erased old friend_wire format — re-provision required");
+        return false;
+    }
+
+    size_t stored = p.getBytesLength("friend_bin");
+    if (stored != BUNDLE_BIN_SIZE) { p.end(); return false; }
+    p.getBytes("friend_bin", s_bundleWire, BUNDLE_BIN_SIZE);
+    s_bundleWireLen = BUNDLE_BIN_SIZE;
     p.end();
-    memcpy(friendKey, s_bundleWire + 41, FRIEND_KEY_LEN);
+    memcpy(friendKey, s_bundleWire + 17, FRIEND_KEY_LEN);   // OFF_FRIEND_KEY = 17
     return true;
 }
 
 // =============================================================================
-// ECDSA verification — verify bundle signature offline
-// Canonical message: "v{ver}|{friend_id_hex}|{vehicle_id}|{friend_key_hex}|{issued_at}|{expires_at}|{perms}"
+// ECDSA verification — verify binary bundle signature offline
+// Input: signed_part = bundle[0..41] (42 bytes), sig_r = bundle[42..73], sig_s = bundle[74..105]
+// Uses raw r/s directly with mbedtls_ecdsa_verify (no DER encoding needed).
 // =============================================================================
 
-static bool verifyBundleEcdsa(int bundle_version, const char* friend_id_hex,
-                               const char* vehicle_id, const char* friend_key_hex,
-                               const char* issued_at, const char* expires_at,
-                               int permissions, const char* sig_b64) {
-    // Static buffers: keep large arrays off the usbSerialTask stack (8KB limit)
-    static char    msg[256];
+static bool verifyBundleEcdsaBinary(const uint8_t* signed_part, size_t sp_len,
+                                     const uint8_t* sig_r, const uint8_t* sig_s) {
     static uint8_t pkDer[128];
-    static uint8_t sigDer[ECDSA_SIG_DER_MAX];
-
-    // Build canonical message
-    snprintf(msg, sizeof(msg), "v%d|%s|%s|%s|%s|%s|%d",
-             bundle_version, friend_id_hex, vehicle_id,
-             friend_key_hex, issued_at, expires_at, permissions);
-
-    // SHA-256
-    uint8_t hash[32];
-    mbedtls_sha256((const unsigned char*)msg, strlen(msg), hash, 0);
-
-    // Load server public key from NVS
     size_t pkLen = nvsLoadServerPubkey(pkDer, sizeof(pkDer));
     if (pkLen == 0) {
         Serial.println("[ECDSA] Server pubkey not in NVS — run SET_SERVER_PUBKEY first");
         return false;
     }
 
-    // Base64-decode DER signature
-    size_t sigLen = 0;
-    if (mbedtls_base64_decode(sigDer, sizeof(sigDer), &sigLen,
-                              (const unsigned char*)sig_b64, strlen(sig_b64)) != 0) {
-        Serial.println("[ECDSA] Signature base64 decode failed");
-        return false;
-    }
-
-    // Verify
     mbedtls_pk_context pk;
     mbedtls_pk_init(&pk);
-    int ret = mbedtls_pk_parse_public_key(&pk, pkDer, pkLen);
-    if (ret != 0) {
-        Serial.printf("[ECDSA] pk_parse failed: -0x%04X\n", (unsigned)(-ret));
+    if (mbedtls_pk_parse_public_key(&pk, pkDer, pkLen) != 0) {
+        Serial.println("[ECDSA] pk_parse failed");
         mbedtls_pk_free(&pk);
         return false;
     }
-    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, hash, 32, sigDer, sigLen);
-    mbedtls_pk_free(&pk);
+    if (mbedtls_pk_get_type(&pk) != MBEDTLS_PK_ECKEY) {
+        mbedtls_pk_free(&pk);
+        return false;
+    }
+
+    mbedtls_ecdsa_context ecdsa;
+    mbedtls_ecdsa_init(&ecdsa);
+    if (mbedtls_ecdsa_from_keypair(&ecdsa, mbedtls_pk_ec(pk)) != 0) {
+        mbedtls_ecdsa_free(&ecdsa); mbedtls_pk_free(&pk);
+        return false;
+    }
+
+    uint8_t hash[32];
+    mbedtls_sha256(signed_part, sp_len, hash, 0);
+
+    mbedtls_mpi r, s;
+    mbedtls_mpi_init(&r); mbedtls_mpi_init(&s);
+    mbedtls_mpi_read_binary(&r, sig_r, 32);
+    mbedtls_mpi_read_binary(&s, sig_s, 32);
+
+    int ret = mbedtls_ecdsa_verify(&ecdsa.MBEDTLS_PRIVATE(grp),
+                                   hash, 32,
+                                   &ecdsa.MBEDTLS_PRIVATE(Q),
+                                   &r, &s);
+    mbedtls_mpi_free(&r); mbedtls_mpi_free(&s);
+    mbedtls_ecdsa_free(&ecdsa); mbedtls_pk_free(&pk);
 
     if (ret != 0) {
         Serial.printf("[ECDSA] Signature invalid: -0x%04X\n", (unsigned)(-ret));
@@ -283,84 +300,75 @@ static bool verifyBundleEcdsa(int bundle_version, const char* friend_id_hex,
 }
 
 // =============================================================================
-// processSetBundle — parse base64-JSON bundle, verify ECDSA, pack wire format
+// processBundleBinary — parse 106-byte binary bundle from SET_BUNDLE_BIN command
 // =============================================================================
 
-static void processSetBundle(const char* b64json) {
-    Serial.printf("[bundle] received b64 len=%d\n", strlen(b64json));
+static void processBundleBinary(const char* b64, size_t b64len) {
+    static uint8_t bundle[128];
+    size_t bundleLen = 0;
 
-    // Static buffer: 1024 bytes off the usbSerialTask stack
-    static uint8_t jsonBuf[1024];
-    size_t  jsonLen = 0;
-    if (mbedtls_base64_decode(jsonBuf, sizeof(jsonBuf) - 1, &jsonLen,
-                              (const unsigned char*)b64json, strlen(b64json)) != 0) {
-        Serial.println("BUNDLE_ERR:decode_failed");
+    if (mbedtls_base64_decode(bundle, sizeof(bundle), &bundleLen,
+                              (const unsigned char*)b64, b64len) != 0) {
+        Serial.println("BUNDLE_ERR:b64_decode");
         return;
     }
-    jsonBuf[jsonLen] = '\0';
-    Serial.printf("[bundle] decoded %d bytes OK\n", jsonLen);
-
-    // Parse JSON
-    DynamicJsonDocument doc(1024);
-    if (deserializeJson(doc, (char*)jsonBuf) != DeserializationError::Ok) {
-        Serial.println("BUNDLE_ERR:json_failed");
-        return;
-    }
-    Serial.println("[bundle] JSON parsed OK");
-
-    int         bundle_version = doc["bundle_version"] | 0;
-    const char* friend_id      = doc["friend_id"];       // hex string, 16 chars
-    const char* vehicle_id     = doc["vehicle_id"];
-    const char* friend_key_hex = doc["friend_key_hex"];  // hex string, 32 chars
-    int         permissions    = doc["permissions"] | 0;
-    const char* issued_at      = doc["issued_at"];       // ISO 8601
-    const char* expires_at     = doc["expires_at"];
-    const char* sig_b64        = doc["issuer_sig_b64"];  // base64 DER
-
-    if (!friend_id || !vehicle_id || !friend_key_hex || !issued_at || !expires_at || !sig_b64) {
-        Serial.println("BUNDLE_ERR:missing_fields");
+    if (bundleLen != BUNDLE_BIN_SIZE) {
+        Serial.printf("BUNDLE_ERR:size_%u\n", (unsigned)bundleLen);
         return;
     }
 
-    // Yield to IDLE task before heavy ECDSA (2-4s) so TWDT doesn't fire
+    uint8_t  version     = bundle[0];
+    const uint8_t* friend_id  = bundle + 1;   // 8 bytes
+    const uint8_t* friend_key = bundle + 17;  // 16 bytes
+    uint32_t issued_at  = ((uint32_t)bundle[33]<<24) | ((uint32_t)bundle[34]<<16)
+                        | ((uint32_t)bundle[35]<<8)  |  (uint32_t)bundle[36];
+    uint32_t expires_at = ((uint32_t)bundle[37]<<24) | ((uint32_t)bundle[38]<<16)
+                        | ((uint32_t)bundle[39]<<8)  |  (uint32_t)bundle[40];
+    const uint8_t* sig_r = bundle + 42;  // 32 bytes
+    const uint8_t* sig_s = bundle + 74;  // 32 bytes
+
+    if (version != 1) {
+        Serial.println("BUNDLE_ERR:version");
+        return;
+    }
+
+    // Time check (requires SET_TIME to have been called first)
+    time_t now;
+    time(&now);
+    if (now > 1000000L) {  // RTC has been set (epoch > 2001)
+        if (issued_at > (uint32_t)now + 60) {
+            Serial.println("BUNDLE_ERR:future_issue");
+            return;
+        }
+        if ((uint32_t)now > expires_at) {
+            Serial.println("BUNDLE_ERR:expired");
+            return;
+        }
+    }
+
     Serial.println("[bundle] Verifying signature...");
-    vTaskDelay(pdMS_TO_TICKS(5));
+    vTaskDelay(pdMS_TO_TICKS(5));  // yield before heavy crypto
 
-    // Verify ECDSA signature offline
-    if (!verifyBundleEcdsa(bundle_version, friend_id, vehicle_id, friend_key_hex,
-                            issued_at, expires_at, permissions, sig_b64)) {
-        Serial.println("BUNDLE_ERR:verify_failed");
+    if (!verifyBundleEcdsaBinary(bundle, BUNDLE_SIGNED_PART, sig_r, sig_s)) {
+        Serial.println("BUNDLE_ERR:verify");
         return;
     }
 
-    // Pack wire format (byte offsets match friend_token.h ft_parse_bundle_wire)
-    memset(s_bundleWire, 0, sizeof(s_bundleWire));
-    s_bundleWire[0] = (uint8_t)bundle_version;
-    hexStringToBytes(friend_id,      s_bundleWire + 1,   FRIEND_ID_LEN);
-    strncpy((char*)(s_bundleWire + 9),  vehicle_id,       VEHICLE_ID_MAX_LEN - 1);
-    hexStringToBytes(friend_key_hex, s_bundleWire + 41,  FRIEND_KEY_LEN);
-    memcpy(friendKey, s_bundleWire + 41, FRIEND_KEY_LEN);
-    s_bundleWire[57] = (uint8_t)permissions;
-    strncpy((char*)(s_bundleWire + 58), issued_at,   31);
-    strncpy((char*)(s_bundleWire + 90), expires_at,  31);
+    // Copy to wire buffer and NVS
+    memcpy(s_bundleWire, bundle, BUNDLE_BIN_SIZE);
+    s_bundleWireLen = BUNDLE_BIN_SIZE;
+    memcpy(friendKey, friend_key, FRIEND_KEY_LEN);
 
-    // Decode DER signature (already verified above, re-decode to pack)
-    static uint8_t sigDer[ECDSA_SIG_DER_MAX];
-    size_t  sigLen = 0;
-    mbedtls_base64_decode(sigDer, sizeof(sigDer), &sigLen,
-                          (const unsigned char*)sig_b64, strlen(sig_b64));
-    s_bundleWire[122] = (uint8_t)sigLen;
-    memcpy(s_bundleWire + 123, sigDer, sigLen);
-    s_bundleWireLen = BUNDLE_WIRE_HEADER_LEN + sigLen;
-
-    // Save to NVS
-    nvsSaveBundleWire(s_bundleWire, s_bundleWireLen);
+    nvsSaveBundleBinary(bundle, BUNDLE_BIN_SIZE);
 
     // Activate friend mode, unblock bleTask
     isFriendMode = true;
     xEventGroupSetBits(sysEvents, EVT_KEY_SET);
 
-    Serial.printf("BUNDLE_OK:%s\n", friend_id);
+    char hexId[17];
+    for (int i = 0; i < 8; i++) sprintf(hexId + i*2, "%02x", friend_id[i]);
+    hexId[16] = '\0';
+    Serial.printf("BUNDLE_OK:%s\n", hexId);
 }
 
 // =============================================================================
@@ -916,17 +924,17 @@ static void usbSerialTask(void* param) {
                     tzset();
                     Serial.println("TIME_OK");
 
-                } else if (buf.startsWith("SET_BUNDLE ")) {
-                    String b64 = buf.substring(11);
-                    processSetBundle(b64.c_str());
+                } else if (buf.startsWith("SET_BUNDLE_BIN ")) {
+                    String b64 = buf.substring(15);
+                    processBundleBinary(b64.c_str(), b64.length());
                 }
 
                 buf = "";
             } else {
-                if (buf.length() < 2048) buf += c;  // SET_BUNDLE line is ~540 chars
+                if (buf.length() < 1024) buf += c;
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 
@@ -1054,6 +1062,8 @@ static void uwbTask(void* param) {
 // =============================================================================
 
 void setup() {
+    Serial.setRxBufferSize(2048);
+    Serial.setTxBufferSize(2048);
     Serial.begin(115200);
     vTaskDelay(pdMS_TO_TICKS(500));
 
@@ -1080,7 +1090,7 @@ void setup() {
     }
 
     // Load friend bundle from NVS nếu đã được provisioned trước đó
-    if (nvsLoadBundleWire()) {
+    if (nvsLoadBundleBinary()) {
         isFriendMode = true;
         xEventGroupSetBits(sysEvents, EVT_KEY_SET);
         Serial.printf("[setup] Friend bundle loaded from NVS (%u bytes)\n",

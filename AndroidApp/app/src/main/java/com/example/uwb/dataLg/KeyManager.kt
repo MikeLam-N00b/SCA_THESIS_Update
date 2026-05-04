@@ -12,7 +12,7 @@ import android.util.Log
  *   owner_pid_{vin}          — owner pairing ID
  *   owner_ts_{vin}           — owner key timestamp
  *   friend_key_{vin}_{fid}   — friend key (hex, 32 chars)
- *   friend_json_{vin}_{fid}  — friend bundle JSON
+ *   friend_bin_{vin}_{fid}   — friend bundle binary (base64)
  *   last_vin                 — VIN được dùng gần nhất
  *   migrated_v2              — flag migration từ namespace cũ (key_*)
  *
@@ -120,10 +120,10 @@ object KeyManager {
 
     // ── Friend bundles ─────────────────────────────────────────────────────
 
-    fun saveFriendBundle(vId: String, friendId: String, keyBytes: ByteArray, bundleJson: String) {
+    fun saveFriendBundle(vId: String, friendId: String, keyBytes: ByteArray, bundleB64: String) {
         prefs?.edit()
             ?.putString("friend_key_${vId}_${friendId}", keyBytes.toHex())
-            ?.putString("friend_json_${vId}_${friendId}", bundleJson)
+            ?.putString("friend_bin_${vId}_${friendId}", bundleB64)
             ?.apply()
         // Activate as current session key for BLE auth
         vehicleId = vId
@@ -143,8 +143,8 @@ object KeyManager {
         }
     }
 
-    fun getFriendBundleJson(vId: String, friendId: String): String? =
-        prefs?.getString("friend_json_${vId}_${friendId}", null)
+    fun getFriendBundleB64(vId: String, friendId: String): String? =
+        prefs?.getString("friend_bin_${vId}_${friendId}", null)
 
     fun listFriendIds(vId: String): List<String> {
         val prefix = "friend_key_${vId}_"
@@ -157,7 +157,7 @@ object KeyManager {
     fun deleteFriendBundle(vId: String, friendId: String) {
         prefs?.edit()
             ?.remove("friend_key_${vId}_${friendId}")
-            ?.remove("friend_json_${vId}_${friendId}")
+            ?.remove("friend_bin_${vId}_${friendId}")
             ?.apply()
         Log.d("KeyManager", "✓ Friend bundle deleted for $vId/$friendId")
     }
@@ -190,7 +190,7 @@ object KeyManager {
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
+    private fun ByteArray.toHex() = joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 
     private fun String.fromHex() = ByteArray(length / 2) { i ->
         substring(i * 2, i * 2 + 2).toInt(16).toByte()

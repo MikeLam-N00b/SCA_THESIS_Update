@@ -2,6 +2,8 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <mbedtls/pk.h>
+#include <mbedtls/ecdsa.h>
+#include <mbedtls/ecp.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/base64.h>
 #include <esp_err.h>
@@ -14,11 +16,19 @@
 // Offline ECDSA-P256-SHA256 verification against the server's signing public
 // key, which is cached in NVS namespace "sca_anchor" (key "server_pub").
 //
-// The canonical signed message format MUST match the server exactly:
-//   "v{version}|{friend_id_hex}|{vehicle_id}|{friend_key_hex}|{issued_at_iso}|{expires_at_iso}|{permissions}"
+// Binary bundle format (106 bytes fixed):
+//   [0]      version (1 byte)
+//   [1..8]   friend_id (8 bytes)
+//   [9..16]  vehicle_hash (8 bytes = SHA-256(VIN)[:8])
+//   [17..32] friend_key (16 bytes)
+//   [33..36] issued_at uint32 BE
+//   [37..40] expires_at uint32 BE
+//   [41]     permissions uint8
+//   [42..73] sig_r (32 bytes)
+//   [74..105] sig_s (32 bytes)
 //
-// Verification order: version → vehicle_id → permissions → time → revocation → ECDSA
-// Earlier checks are cheap; ECDSA is last to avoid wasting CPU on invalid bundles.
+// Signing input: SHA-256(bundle[0..41])
+// Verification order: version → vehicle_hash → permissions → time → revocation → ECDSA
 // =============================================================================
 
 static const char *TAG_TOKEN = "FRIEND_TOKEN";
@@ -26,43 +36,26 @@ static const char *TAG_TOKEN = "FRIEND_TOKEN";
 // ── Wire-format parser ────────────────────────────────────────────────────────
 
 /**
- * Parse the BLE binary wire format into a friend_bundle_t.
- *
- * Offsets (0-based):
- *  [0]       version (1 byte)
- *  [1..8]    friend_id (8 bytes)
- *  [9..40]   vehicle_id (32 bytes, null-padded)
- *  [41..56]  friend_key (16 bytes)
- *  [57]      permissions (1 byte)
- *  [58..89]  issued_at_iso (32 bytes, null-padded)
- *  [90..121] expires_at_iso (32 bytes, null-padded)
- *  [122]     issuer_sig_len (1 byte)
- *  [123..]   issuer_sig (DER, up to 72 bytes)
+ * Parse the 106-byte binary bundle into a friend_bundle_t.
  */
 static bool ft_parse_bundle_wire(const uint8_t *buf, size_t len,
                                   friend_bundle_t *out) {
-    if (len < BUNDLE_WIRE_HEADER_LEN) return false;
-    uint8_t sig_len = buf[122];
-    if (sig_len == 0 || sig_len > ECDSA_SIG_DER_MAX) return false;
-    if (len < (size_t)(BUNDLE_WIRE_HEADER_LEN + sig_len)) return false;
+    if (len != BUNDLE_BIN_SIZE) return false;
 
-    out->version     = buf[0];
-    memcpy(out->friend_id,  buf + 1,  FRIEND_ID_LEN);
-    memcpy(out->vehicle_id, buf + 9,  VEHICLE_ID_MAX - 1);
-    out->vehicle_id[VEHICLE_ID_MAX - 1] = '\0';
-    memcpy(out->friend_key, buf + 41, FRIEND_KEY_LEN);
-    out->permissions = buf[57];
+    out->version = buf[OFF_VERSION];
+    if (out->version != BUNDLE_VERSION) return false;
 
-    // Copy ISO strings; ensure null-termination within our buffer
-    memcpy(out->issued_at_iso,  buf + 58, 31);  out->issued_at_iso[31]  = '\0';
-    memcpy(out->expires_at_iso, buf + 90, 31);  out->expires_at_iso[31] = '\0';
+    memcpy(out->friend_id,    buf + OFF_FRIEND_ID,    FRIEND_ID_LEN);
+    memcpy(out->vehicle_hash, buf + OFF_VEHICLE_HASH,  8);
+    memcpy(out->friend_key,   buf + OFF_FRIEND_KEY,   FRIEND_KEY_LEN);
 
-    out->issuer_sig_len = sig_len;
-    memcpy(out->issuer_sig, buf + 123, sig_len);
+    out->issued_at  = ft_read_be32(buf + OFF_ISSUED_AT);
+    out->expires_at = ft_read_be32(buf + OFF_EXPIRES_AT);
+    out->permissions = buf[OFF_PERMISSIONS];
 
-    // Parse ISO → Unix for time comparisons
-    out->issued_at  = ft_parse_iso_to_unix(out->issued_at_iso);
-    out->expires_at = ft_parse_iso_to_unix(out->expires_at_iso);
+    memcpy(out->sig_r, buf + OFF_SIG_R, 32);
+    memcpy(out->sig_s, buf + OFF_SIG_S, 32);
+    memcpy(out->raw,   buf,             BUNDLE_BIN_SIZE);
     return true;
 }
 
@@ -105,14 +98,11 @@ static esp_err_t friend_token_load_server_pubkey(uint8_t *out_der,
  *
  * Steps (cheap-to-expensive order):
  *   1. Bundle version
- *   2. Vehicle ID match  (prevents cross-vehicle bundle reuse)
+ *   2. Vehicle hash match  (SHA-256(expected_vehicle_id)[:8])
  *   3. Permission check
  *   4. Time window       (issued_at ≤ now ≤ expires_at)
  *   5. Revocation check  (NVS blacklist lookup)
- *   6. ECDSA-P256-SHA256 signature  (mbedtls_pk_verify — most expensive)
- *
- * Constant-time semantics: mbedtls_pk_verify internally uses constant-time
- * comparison for the ECDSA core; we don't short-circuit on partial results.
+ *   6. ECDSA-P256-SHA256 signature on signed_part (bundle->raw[:42])
  *
  * @param expected_vehicle_id  Must equal VEHICLE_ID from anchor_config.h.
  */
@@ -129,10 +119,12 @@ static token_verify_result_t friend_token_verify(
         return TOKEN_ERR_VERSION_MISMATCH;
     }
 
-    // 2. Vehicle ID — null-safe comparison up to VEHICLE_ID_MAX
-    if (strncmp(bundle->vehicle_id, expected_vehicle_id, VEHICLE_ID_MAX) != 0) {
-        Serial.printf("[%s] VEHICLE_MISMATCH: bundle='%s' expected='%s'\n",
-                      TAG_TOKEN, bundle->vehicle_id, expected_vehicle_id);
+    // 2. Vehicle hash — compare SHA-256(expected_vehicle_id)[:8] with bundle->vehicle_hash
+    uint8_t expected_hash[32];
+    mbedtls_sha256((const unsigned char *)expected_vehicle_id,
+                   strlen(expected_vehicle_id), expected_hash, 0);
+    if (memcmp(bundle->vehicle_hash, expected_hash, 8) != 0) {
+        Serial.printf("[%s] VEHICLE_MISMATCH\n", TAG_TOKEN);
         return TOKEN_ERR_VEHICLE_MISMATCH;
     }
 
@@ -145,22 +137,22 @@ static token_verify_result_t friend_token_verify(
 
     // 4. Time window
     if (bundle->issued_at == 0 || bundle->expires_at == 0) {
-        Serial.printf("[%s] TIME_PARSE_FAIL: issued_iso='%s' expires_iso='%s'\n",
-                      TAG_TOKEN, bundle->issued_at_iso, bundle->expires_at_iso);
+        Serial.printf("[%s] TIME_INVALID: issued=%lu expires=%lu\n",
+                      TAG_TOKEN, (unsigned long)bundle->issued_at, (unsigned long)bundle->expires_at);
         return TOKEN_ERR_INTERNAL;
     }
-    Serial.printf("[%s] Time: now=%lu  issued=%lu ('%s')  expires=%lu ('%s')\n",
+    Serial.printf("[%s] Time: now=%lu  issued=%lu  expires=%lu\n",
                   TAG_TOKEN,
                   (unsigned long)current_unix_time,
-                  (unsigned long)bundle->issued_at,  bundle->issued_at_iso,
-                  (unsigned long)bundle->expires_at, bundle->expires_at_iso);
+                  (unsigned long)bundle->issued_at,
+                  (unsigned long)bundle->expires_at);
     if (current_unix_time < bundle->issued_at) {
-        Serial.printf("[%s] NOT_YET_VALID: bundle starts in %lu s\n",
+        Serial.printf("[%s] NOT_YET_VALID: starts in %lu s\n",
                       TAG_TOKEN, (unsigned long)(bundle->issued_at - current_unix_time));
         return TOKEN_ERR_NOT_YET_VALID;
     }
     if (current_unix_time > bundle->expires_at) {
-        Serial.printf("[%s] EXPIRED: bundle expired %lu s ago\n",
+        Serial.printf("[%s] EXPIRED: expired %lu s ago\n",
                       TAG_TOKEN, (unsigned long)(current_unix_time - bundle->expires_at));
         return TOKEN_ERR_EXPIRED;
     }
@@ -172,30 +164,10 @@ static token_verify_result_t friend_token_verify(
         return TOKEN_ERR_REVOKED;
     }
 
-    // 6. ECDSA signature — reconstruct the exact canonical message the server signed
-    char friend_id_hex[FRIEND_ID_LEN  * 2 + 1];
-    char friend_key_hex[FRIEND_KEY_LEN * 2 + 1];
-    ft_bytes_to_hex(bundle->friend_id,  FRIEND_ID_LEN,  friend_id_hex);
-    ft_bytes_to_hex(bundle->friend_key, FRIEND_KEY_LEN, friend_key_hex);
-
-    // Buffer: "v1|{16}|{≤31}|{32}|{≤31}|{≤31}|{≤3}" ≈ 153 chars max → 256 safe
-    char msg[256];
-    snprintf(msg, sizeof(msg), "v%d|%s|%s|%s|%s|%s|%d",
-             (int)bundle->version,
-             friend_id_hex,
-             bundle->vehicle_id,
-             friend_key_hex,
-             bundle->issued_at_iso,
-             bundle->expires_at_iso,
-             (int)bundle->permissions);
-
-    Serial.printf("[%s] ECDSA canonical: %s\n", TAG_TOKEN, msg);
-
-    // SHA-256 of the canonical message
+    // 6. ECDSA signature on SHA-256(bundle->raw[:42]) using raw r/s
     uint8_t hash[32];
-    mbedtls_sha256((const unsigned char *)msg, strlen(msg), hash, 0);
+    mbedtls_sha256(bundle->raw, BUNDLE_SIGNED_PART, hash, 0);
 
-    // Load and parse cached server public key
     uint8_t pub_der[128];
     size_t  pub_len = sizeof(pub_der);
     if (friend_token_load_server_pubkey(pub_der, &pub_len) != ESP_OK) {
@@ -211,16 +183,34 @@ static token_verify_result_t friend_token_verify(
         mbedtls_pk_free(&pk);
         return TOKEN_ERR_INTERNAL;
     }
+    if (mbedtls_pk_get_type(&pk) != MBEDTLS_PK_ECKEY) {
+        mbedtls_pk_free(&pk);
+        return TOKEN_ERR_INTERNAL;
+    }
 
-    // mbedtls_pk_verify uses constant-time ECDSA comparison internally
-    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, hash, 32,
-                             bundle->issuer_sig, bundle->issuer_sig_len);
-    mbedtls_pk_free(&pk);
+    mbedtls_ecdsa_context ecdsa;
+    mbedtls_ecdsa_init(&ecdsa);
+    ret = mbedtls_ecdsa_from_keypair(&ecdsa, mbedtls_pk_ec(pk));
+    if (ret != 0) {
+        mbedtls_ecdsa_free(&ecdsa); mbedtls_pk_free(&pk);
+        return TOKEN_ERR_INTERNAL;
+    }
+
+    mbedtls_mpi r, s;
+    mbedtls_mpi_init(&r); mbedtls_mpi_init(&s);
+    mbedtls_mpi_read_binary(&r, bundle->sig_r, 32);
+    mbedtls_mpi_read_binary(&s, bundle->sig_s, 32);
+
+    ret = mbedtls_ecdsa_verify(&ecdsa.MBEDTLS_PRIVATE(grp),
+                               hash, 32,
+                               &ecdsa.MBEDTLS_PRIVATE(Q),
+                               &r, &s);
+
+    mbedtls_mpi_free(&r); mbedtls_mpi_free(&s);
+    mbedtls_ecdsa_free(&ecdsa); mbedtls_pk_free(&pk);
 
     if (ret != 0) {
-        Serial.printf("[%s] BAD_SIGNATURE: mbedtls -0x%04X\n"
-                      "[%s]   canonical='%s'\n",
-                      TAG_TOKEN, (unsigned)(-ret), TAG_TOKEN, msg);
+        Serial.printf("[%s] BAD_SIGNATURE: mbedtls -0x%04X\n", TAG_TOKEN, (unsigned)(-ret));
         return TOKEN_ERR_BAD_SIGNATURE;
     }
 

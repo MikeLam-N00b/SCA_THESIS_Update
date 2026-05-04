@@ -37,7 +37,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class BluetoothFragment : Fragment() {
 
     companion object {
-        const val ARG_FRIEND_BUNDLE_JSON = "friend_bundle_json"
+        const val ARG_FRIEND_BUNDLE_BIN = "friend_bundle_bin"
         private const val TAG = "FriendProvision"
     }
 
@@ -119,20 +119,19 @@ class BluetoothFragment : Fragment() {
             IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED)
         )
 
-        val bundleJson = arguments?.getString(ARG_FRIEND_BUNDLE_JSON)
-        if (bundleJson != null) {
-            Log.i(TAG, "═══ FRIEND MODE ═══ BluetoothFragment nhận bundleJson (${bundleJson.length} chars) — chờ cắm Tag")
-            // Friend mode: ẩn BLE list, không cần scan, không cho click
+        val bundleBin = arguments?.getByteArray(ARG_FRIEND_BUNDLE_BIN)
+        if (bundleBin != null) {
+            Log.i(TAG, "FRIEND MODE — bundle ${bundleBin.size} bytes — waiting for USB Tag")
             binding.rvBluetooth.visibility = android.view.View.GONE
             binding.btnRefresh.visibility = android.view.View.GONE
             binding.tvTitle.text = "Cắm Tag vào USB..."
         } else {
-            Log.i(TAG, "═══ OWNER MODE ═══ BluetoothFragment không có bundleJson — chỉ log USB")
+            Log.i(TAG, "OWNER MODE — no bundle")
         }
 
         findAndConnectEsp32()
 
-        if (bundleJson == null) {
+        if (bundleBin == null) {
             binding.rvBluetooth.setOnItemClickListener { _, _, position, _ ->
                 val device = deviceList[position]
                 val mac = device.address.lowercase()
@@ -173,24 +172,20 @@ class BluetoothFragment : Fragment() {
 
     private fun connectUsbDevice(device: UsbDevice) {
         Log.i(TAG, "USB: openDevice vendorId=0x${device.vendorId.toString(16)} productId=0x${device.productId.toString(16)}")
-        val bundleJson = arguments?.getString(ARG_FRIEND_BUNDLE_JSON)
-        if (bundleJson != null) {
+        val bundleBin = arguments?.getByteArray(ARG_FRIEND_BUNDLE_BIN)
+        if (bundleBin != null) {
             _binding?.tvTitle?.text = "Đang kết nối USB..."
-            val usbManager = requireContext().getSystemService(android.content.Context.USB_SERVICE) as android.hardware.usb.UsbManager
-            if (!usbManager.hasPermission(device)) {
-                _binding?.tvTitle?.text = "Cấp quyền USB khi hộp thoại xuất hiện"
-            }
         }
         usbTransport.openDevice(device) {
             TransportHolder.transport = usbTransport
 
             requireActivity().runOnUiThread {
-                if (bundleJson != null) {
-                    Log.i(TAG, "USB: connected — bundleJson present → bắt đầu provisionFriendBundle")
+                if (bundleBin != null) {
+                    Log.i(TAG, "USB: connected — bundleBin present (${bundleBin.size} bytes) → provisionFriendBundle")
                     _binding?.tvTitle?.text = "Đang nạp bundle..."
-                    lifecycleScope.launch { provisionFriendBundle(bundleJson) }
+                    lifecycleScope.launch { provisionFriendBundle(bundleBin) }
                 } else {
-                    Log.i(TAG, "USB: connected — KHÔNG có bundleJson → owner log mode (KHÔNG gửi SET_BUNDLE)")
+                    Log.i(TAG, "USB: connected — owner log mode")
                     Toast.makeText(requireContext(), "Đã kết nối ESP32-S3 qua USB", Toast.LENGTH_SHORT).show()
                     restoreLogCallback()
                 }
@@ -200,22 +195,18 @@ class BluetoothFragment : Fragment() {
 
     // ── USB Provisioning ────────────────────────────────────────────────────
 
-    private suspend fun provisionFriendBundle(bundleJson: String) {
+    private suspend fun provisionFriendBundle(bundle: ByteArray) {
         val ctx = requireContext()
-        Log.i(TAG, "provisionFriendBundle: START — bundleJson length=${bundleJson.length}")
+        Log.i(TAG, "provisionFriendBundle: START — bundle=${bundle.size} bytes")
 
         val serverPubKey = withContext(Dispatchers.IO) { ServerPublicKeyStore.load(ctx) }
         if (serverPubKey == null) {
-            Log.e(TAG, "provisionFriendBundle: ABORT — ServerPublicKeyStore trống, chưa có server signing key")
-            Log.e(TAG, "  → Nguyên nhân: owner chưa tạo QR (prefetchServerPublicKey chưa chạy)")
-            Log.e(TAG, "  → Fix: chạy owner flow tạo QR ít nhất một lần để cache server pubkey")
             withContext(Dispatchers.Main) {
                 Toast.makeText(ctx, "Chưa có server signing key — không thể nạp bundle vào Tag", Toast.LENGTH_LONG).show()
             }
             restoreLogCallback()
             return
         }
-        Log.i(TAG, "provisionFriendBundle: serverPubKey có sẵn (${serverPubKey.length} chars)")
 
         // Line-buffered response channel — receive callback chạy trên IO thread của SerialInputOutputManager
         val lineChannel = Channel<String>(Channel.UNLIMITED)
@@ -291,39 +282,27 @@ class BluetoothFragment : Fragment() {
             }
         }
 
-        // Step 3: SET_BUNDLE
+        // Step 3: SET_BUNDLE_BIN — binary 106 bytes, base64-encoded → 144 chars → fits 256-byte RX buffer
         if (!oldFirmware) {
-            Log.i(TAG, "─── Step 3: SET_BUNDLE ───")
+            Log.i(TAG, "─── Step 3: SET_BUNDLE_BIN ───")
             _binding?.tvTitle?.text = "Gửi bundle... (3/3)"
-            val bundleB64 = Base64.encodeToString(
-                bundleJson.toByteArray(Charsets.UTF_8),
-                Base64.NO_WRAP
-            )
-            Log.i(TAG, "  bundleJson=${bundleJson.length} chars → base64=${bundleB64.length} chars")
-            Log.i(TAG, "  Tổng command length = ${11 + bundleB64.length} chars (SET_BUNDLE + space + b64)")
-            // ECDSA P-256 verify trên ESP32-S3 (mbedTLS) mất 2-4s → dùng 10s timeout
-            when (val r = sendCmd("SET_BUNDLE $bundleB64", "BUNDLE_", timeoutMs = 10_000L)) {
+            val bundleB64 = Base64.encodeToString(bundle, Base64.NO_WRAP)
+            Log.i(TAG, "  bundle=${bundle.size} bytes → base64=${bundleB64.length} chars")
+            // ECDSA P-256 verify trên ESP32-S3 (mbedTLS) mất ~150-300ms → 10s timeout an toàn
+            when (val r = sendCmd("SET_BUNDLE_BIN $bundleB64", "BUNDLE_", timeoutMs = 10_000L)) {
                 null -> {
-                    Log.e(TAG, "Step 3 TIMEOUT (10s) — Tag không respond: crash/watchdog hoặc firmware cũ")
+                    Log.e(TAG, "Step 3 TIMEOUT (10s) — firmware cũ hoặc Tag crash")
                     oldFirmware = true
                 }
                 else -> {
                     if (r.startsWith("BUNDLE_OK")) {
                         val friendId = r.split(":").getOrNull(1) ?: ""
-                        Log.i(TAG, "Step 3 OK ✓ → BUNDLE_OK friendId=$friendId — Tag sẽ tự scan BLE và connect Anchor")
+                        Log.i(TAG, "Step 3 OK ✓ → BUNDLE_OK friendId=$friendId")
                         _binding?.tvTitle?.text = "Bundle OK — Tag đang kết nối Anchor"
                         Toast.makeText(ctx, "Bundle đã nạp vào Tag ($friendId)", Toast.LENGTH_SHORT).show()
                     } else {
                         val reason = r.removePrefix("BUNDLE_ERR:")
                         Log.e(TAG, "Step 3 FAIL: BUNDLE_ERR:$reason")
-                        Log.e(TAG, when (reason) {
-                            "json_failed"     -> "  → JSON parse lỗi: có thể buffer Tag vẫn quá nhỏ (cần >= 2048)"
-                            "missing_fields"  -> "  → JSON thiếu field: kiểm tra friend_key_hex, friend_id, vehicle_id, issued_at, expires_at"
-                            "verify_failed"   -> "  → ECDSA verify lỗi: canonical message không khớp server"
-                            "no_server_key"   -> "  → Tag chưa có server pubkey: SET_SERVER_PUBKEY chưa thành công"
-                            "wire_pack_failed"-> "  → Không pack wire bundle được"
-                            else              -> "  → Lỗi không xác định: $reason"
-                        })
                         _binding?.tvTitle?.text = "Bundle lỗi: $reason"
                         Toast.makeText(ctx, "Tag từ chối bundle: $reason", Toast.LENGTH_LONG).show()
                     }
