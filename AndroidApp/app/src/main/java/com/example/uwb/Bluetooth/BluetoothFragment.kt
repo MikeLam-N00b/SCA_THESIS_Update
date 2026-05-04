@@ -1,6 +1,7 @@
 package com.example.uwb.Bluetooth
 
 import android.Manifest
+import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.le.ScanCallback
@@ -53,6 +54,20 @@ class BluetoothFragment : Fragment() {
 
     private val ESP32_VENDOR_ID = 0x303A
     private val SCAN_PERIOD_MS = 10000L
+    private val ACTION_USB_PERMISSION = "com.example.uwb.USB_PERMISSION"
+
+    private val usbPermissionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != ACTION_USB_PERMISSION) return
+            val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+            if (granted && device != null) {
+                connectUsbDevice(device)
+            } else {
+                Toast.makeText(requireContext(), "USB không được cấp quyền", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     private fun sanitizeBleName(raw: String?): String {
         if (raw.isNullOrEmpty()) return "Unknown"
@@ -97,7 +112,7 @@ class BluetoothFragment : Fragment() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
                 val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                device?.let { connectUsbDevice(it) }
+                device?.let { requestUsbPermissionOrConnect(it) }
             }
         }
     }
@@ -114,10 +129,12 @@ class BluetoothFragment : Fragment() {
 
         usbTransport = UsbTransport(requireContext())
 
-        requireContext().registerReceiver(
-            usbAttachReceiver,
-            IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED)
-        )
+        val usbIntentFilter = IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(ACTION_USB_PERMISSION)
+        }
+        requireContext().registerReceiver(usbAttachReceiver, usbIntentFilter)
+        requireContext().registerReceiver(usbPermissionReceiver, IntentFilter(ACTION_USB_PERMISSION))
 
         val bundleBin = arguments?.getByteArray(ARG_FRIEND_BUNDLE_BIN)
         if (bundleBin != null) {
@@ -164,9 +181,23 @@ class BluetoothFragment : Fragment() {
         val usbManager = requireContext().getSystemService(Context.USB_SERVICE) as UsbManager
         val esp32 = usbManager.deviceList.values.find { it.vendorId == ESP32_VENDOR_ID }
         if (esp32 != null) {
-            connectUsbDevice(esp32)
+            requestUsbPermissionOrConnect(esp32)
         } else {
             Toast.makeText(requireContext(), "Chưa thấy ESP32-S3 — hãy cắm cáp USB", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun requestUsbPermissionOrConnect(device: UsbDevice) {
+        val usbManager = requireContext().getSystemService(Context.USB_SERVICE) as UsbManager
+        if (usbManager.hasPermission(device)) {
+            connectUsbDevice(device)
+        } else {
+            val permIntent = PendingIntent.getBroadcast(
+                requireContext(), 0,
+                Intent(ACTION_USB_PERMISSION),
+                PendingIntent.FLAG_IMMUTABLE
+            )
+            usbManager.requestPermission(device, permIntent)
         }
     }
 
@@ -382,6 +413,7 @@ class BluetoothFragment : Fragment() {
             bluetoothAdapter?.bluetoothLeScanner?.stopScan(bleScanCallback)
         }
         requireContext().unregisterReceiver(usbAttachReceiver)
+        requireContext().unregisterReceiver(usbPermissionReceiver)
         _binding = null
     }
 }

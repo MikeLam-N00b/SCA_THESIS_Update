@@ -285,9 +285,9 @@ static bool verifyBundleEcdsaBinary(const uint8_t* signed_part, size_t sp_len,
     mbedtls_mpi_read_binary(&r, sig_r, 32);
     mbedtls_mpi_read_binary(&s, sig_s, 32);
 
-    int ret = mbedtls_ecdsa_verify(&ecdsa.MBEDTLS_PRIVATE(grp),
+    int ret = mbedtls_ecdsa_verify(&ecdsa.grp,
                                    hash, 32,
-                                   &ecdsa.MBEDTLS_PRIVATE(Q),
+                                   &ecdsa.Q,
                                    &r, &s);
     mbedtls_mpi_free(&r); mbedtls_mpi_free(&s);
     mbedtls_ecdsa_free(&ecdsa); mbedtls_pk_free(&pk);
@@ -944,20 +944,24 @@ static void usbSerialTask(void* param) {
 
 static void bleTask(void* param) {
     Serial.printf("[bleTask] started on core %d\n", xPortGetCoreID());
-    Serial.println("[bleTask] Waiting for key or bundle...");
-    xEventGroupWaitBits(sysEvents, EVT_KEY_SET, pdFALSE, pdFALSE, portMAX_DELAY);
 
-    // ── Friend mode branch ────────────────────────────────────────────────────
-    if (isFriendMode) {
-        Serial.println("[bleTask] Friend mode — connecting to Anchor as friend");
-        connectAsFriend();
-        Serial.println("[bleTask] Friend flow complete — idle");
-        vTaskDelete(NULL);
-        return;
-    }
+    for (;;) {
+        Serial.println("[bleTask] Waiting for key or bundle...");
+        // pdTRUE: clear EVT_KEY_SET on exit so next iteration blocks correctly
+        xEventGroupWaitBits(sysEvents, EVT_KEY_SET, pdTRUE, pdFALSE, portMAX_DELAY);
 
-    // ── Owner mode ────────────────────────────────────────────────────────────
-    Serial.println("[bleTask] Owner mode — starting BLE scan");
+        // ── Friend mode branch ────────────────────────────────────────────────────
+        if (isFriendMode) {
+            Serial.println("[bleTask] Friend mode — connecting to Anchor as friend");
+            connectAsFriend();
+            Serial.println("[bleTask] Friend flow complete — waiting for new bundle...");
+            isFriendMode    = false;
+            s_bundleWireLen = 0;
+            continue;  // loop back, wait for next SET_BUNDLE_BIN
+        }
+
+        // ── Owner mode ────────────────────────────────────────────────────────────
+        Serial.println("[bleTask] Owner mode — starting BLE scan");
 
     BLEScan* pBLEScan = BLEDevice::getScan();
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
@@ -1014,6 +1018,8 @@ static void bleTask(void* param) {
         Serial.println("[bleTask] Disconnected — scanning again in 1s");
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
+    } // outer for(;;)
+    vTaskDelete(NULL);
 }
 
 // =============================================================================

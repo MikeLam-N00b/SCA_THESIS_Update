@@ -207,13 +207,30 @@ class FriendSharingFragment : Fragment() {
                 }
 
                 if (pubKeyB64 != null) {
-                    val valid = withContext(Dispatchers.Default) {
+                    var valid = withContext(Dispatchers.Default) {
                         EcdsaVerifier.verifyBundleBinary(bundleBytes, pubKeyB64)
+                    }
+                    if (!valid) {
+                        // Key cũ có thể không còn hợp lệ — thử fetch key mới từ server
+                        Log.w("FriendSharing", "ECDSA verify failed with cached key — refreshing server key")
+                        val freshKey = try {
+                            withContext(Dispatchers.IO) {
+                                ApiClient.api.getServerPublicKey().server_public_key_b64
+                            }.also { ServerPublicKeyStore.save(requireContext(), it) }
+                        } catch (e: Exception) {
+                            Log.w("FriendSharing", "Server key refresh failed: ${e.message}")
+                            null
+                        }
+                        if (freshKey != null && freshKey != pubKeyB64) {
+                            valid = withContext(Dispatchers.Default) {
+                                EcdsaVerifier.verifyBundleBinary(bundleBytes, freshKey)
+                            }
+                        }
                     }
                     if (!valid) {
                         Toast.makeText(
                             requireContext(),
-                            "Bundle signature không hợp lệ — server key không khớp",
+                            "Bundle signature không hợp lệ — không thể xác minh",
                             Toast.LENGTH_LONG
                         ).show()
                         if (BuildConfig.DEBUG) {
