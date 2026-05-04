@@ -852,11 +852,48 @@ static void connectAsFriend() {
         if (s_friendAccepted) {
             Serial.println("FRIEND_ACCESS_GRANTED");
             digitalWrite(LED_PIN, HIGH);
+
+            // Discover main service characteristic for UWB signaling.
+            // TAG_UWB_READY is written here; UWB_ACTIVE notification comes back here.
+            BLERemoteService* pMainSvc = pClient->getService(SERVICE_UUID);
+            if (pMainSvc) {
+                pRemoteCharacteristic = pMainSvc->getCharacteristic(CHARACTERISTIC_UUID);
+                if (pRemoteCharacteristic && pRemoteCharacteristic->canNotify())
+                    pRemoteCharacteristic->registerForNotify(notifyCallback);
+            }
+
+            if (pRemoteCharacteristic) {
+                // Arm UWB: sends TAG_UWB_READY, waits for UWB_ACTIVE from Anchor.
+                // Anchor allows TAG_UWB_READY because s_friendBundleVerified is set.
+                armUWB("friend");
+
+                // Forward uwbTask's queue messages (VERIFIED / WARNING / UWB_STOP)
+                // to Anchor via main characteristic — identical to owner mode loop.
+                while (connected) {
+                    BleWriteMsg wm;
+                    while (xQueueReceive(bleWriteQueue, &wm, 0) == pdTRUE) {
+                        if (pRemoteCharacteristic && connected)
+                            pRemoteCharacteristic->writeValue((uint8_t*)wm.data, wm.len);
+                    }
+                    if (uwbStoppedFar) {
+                        int rssi = pClient ? pClient->getRssi() : -127;
+                        if (rssi > RSSI_THRESHOLD_DBM && rssi > -115 && rssi != 0) {
+                            uwbStoppedFar = false;
+                            armUWB("friend-rearm");
+                        }
+                        vTaskDelay(pdMS_TO_TICKS(RSSI_CHECK_INTERVAL_MS));
+                    } else {
+                        vTaskDelay(pdMS_TO_TICKS(50));
+                    }
+                }
+            } else {
+                Serial.println("[Friend] Main service char not found — no UWB");
+                if (connected) pClient->disconnect();
+            }
         } else {
             Serial.println("FRIEND_ACCESS_DENIED");
+            if (connected) pClient->disconnect();
         }
-
-        if (connected) pClient->disconnect();
         break;
     }
 }
@@ -1028,12 +1065,7 @@ static void bleTask(void* param) {
 
 static void uwbTask(void* param) {
     Serial.printf("[uwbTask] started on core %d\n", xPortGetCoreID());
-
-    if (isFriendMode) {
-        Serial.println("[uwbTask] Friend mode — UWB not used");
-        vTaskDelete(NULL);
-        return;
-    }
+    // Friend mode also uses UWB ranging — uwbTask runs in all modes.
 
 #if !UWB_ENABLED
     Serial.println("[uwbTask] UWB disabled — task idle");

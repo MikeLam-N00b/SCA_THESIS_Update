@@ -70,14 +70,18 @@ static QueueHandle_t bundleQueue;  // depth 2
 // State variables (tối thiểu — phần lớn state nằm trong EventGroup)
 // =============================================================================
 
-static volatile bool    carUnlocked      = false;
-static volatile bool    hasKey           = false;
-static volatile bool    bleStarted       = false;
-static volatile bool    deviceConnected  = false;
-static volatile bool    authenticated    = false;
+static volatile bool    carUnlocked          = false;
+static volatile bool    hasKey               = false;
+static volatile bool    bleStarted           = false;
+static volatile bool    deviceConnected      = false;
+static volatile bool    authenticated        = false;
+// Set by friendMgmtTask when friend bundle is verified OK.
+// Allows CharacteristicCallbacks to accept TAG_UWB_READY from friend sessions.
+// Cleared on every onConnect.
+static volatile bool    s_friendBundleVerified = false;
 // Incremented on every onConnect — bleTask embeds this in BLE_SEND_CHALLENGE so
 // stale messages from previous sessions can be detected and discarded.
-static volatile uint8_t connectionGen    = 0;
+static volatile uint8_t connectionGen        = 0;
 
 static BLEServer*       pBleServer       = nullptr;  // global để bleTask có thể ngắt kết nối
 
@@ -807,9 +811,11 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks {
             xQueueSend(uwbQueue, &cmd, pdMS_TO_TICKS(10));
             Serial.println("UWB: Tag beyond 20m");
         } else if (STARTS("TAG_UWB_READY")) {
-            bool authed = (xEventGroupGetBits(sysEvents) & EVT_AUTHED) != 0;
-            Serial.printf("[BLE] TAG_UWB_READY received — authed=%d\n", (int)authed);
-            if (authed) {
+            bool authed    = (xEventGroupGetBits(sysEvents) & EVT_AUTHED) != 0;
+            bool friendOk  = s_friendBundleVerified;
+            Serial.printf("[BLE] TAG_UWB_READY received — authed=%d friend=%d\n",
+                          (int)authed, (int)friendOk);
+            if (authed || friendOk) {
                 cmd = UWB_CMD_INIT;
                 BaseType_t sent = xQueueSend(uwbQueue, &cmd, pdMS_TO_TICKS(10));
                 Serial.printf("[BLE] UWB_CMD_INIT queued=%d\n", (int)(sent == pdTRUE));
@@ -824,10 +830,11 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks {
 
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
-        deviceConnected   = true;
-        authenticated     = false;
-        responseBufferLen = 0;
-        s_bundleBufLen    = 0;  // discard any partial bundle from previous session
+        deviceConnected       = true;
+        authenticated         = false;
+        responseBufferLen     = 0;
+        s_bundleBufLen        = 0;  // discard any partial bundle from previous session
+        s_friendBundleVerified = false;
         connectionGen++;   // new generation — invalidates any pending BLE_SEND_CHALLENGE
         xEventGroupSetBits(sysEvents, EVT_CONNECTED);
         xEventGroupClearBits(sysEvents, EVT_AUTHED | EVT_UWB_ACTIVE);
@@ -847,10 +854,18 @@ class MyServerCallbacks : public BLEServerCallbacks {
         xEventGroupClearBits(sysEvents, EVT_CONNECTED | EVT_AUTHED | EVT_UWB_ACTIVE);
         Serial.println("BLE: Tag disconnected");
 
-        // Deinit UWB + lock car + restart advertising — mỗi task nhận command riêng
         uint8_t cmd;
         cmd = UWB_CMD_DEINIT; xQueueSend(uwbQueue, &cmd, pdMS_TO_TICKS(10));
-        cmd = CAN_CMD_LOCK;   xQueueSend(canQueue, &cmd, pdMS_TO_TICKS(10));
+        s_friendBundleVerified = false;
+
+        // Lock only if car was actually unlocked — handles both owner and friend mode.
+        // If bundle was rejected or Tag disconnects before VERIFIED, car is still locked.
+        if (carUnlocked) {
+            cmd = CAN_CMD_LOCK; xQueueSend(canQueue, &cmd, pdMS_TO_TICKS(10));
+        } else {
+            Serial.println("[onDisconnect] Car not unlocked — skipping auto-lock");
+        }
+
         BleCmdMsg msg = {}; msg.type = BLE_RESTART_ADV;
         xQueueSend(bleQueue, &msg, pdMS_TO_TICKS(10));
     }
@@ -1379,11 +1394,11 @@ static void friendMgmtTask(void *param) {
         Serial.printf("[FRIEND] Clock: now=%lu %s\n",
                       (unsigned long)now,
                       now >= 1000000000UL ? "OK" : "NOT_SYNCED");
-        if (now < 1000000000UL) {
-            Serial.println("[FRIEND] Reject: clock not synced (run wifiInit or SET_TIME)");
-            ble_notify_friend_status(1, TOKEN_ERR_INTERNAL);
-            continue;
-        }
+if (now < 1000000000UL) {
+    // Clock chưa sync — dùng issued_at làm anchor tạm thời
+    now = bundle.issued_at + 1;  // giả định "vừa issued"
+    Serial.println("[FRIEND] Warning: clock not synced — using issued_at as reference");
+}
 
         // Step 1 — offline ECDSA + time + revocation
         token_verify_result_t r = friend_token_verify(&bundle, now, PERM_UNLOCK, VEHICLE_ID);
@@ -1399,48 +1414,30 @@ static void friendMgmtTask(void *param) {
         bool was_cached = (friend_cache_get(bundle.friend_id, &cf) == ESP_OK);
         Serial.printf("[FRIEND] Cache: %s\n", was_cached ? "HIT" : "MISS");
 
-        if (!was_cached) {
-            Serial.printf("[FRIEND] WiFi: %s\n",
-                          WiFi.status() == WL_CONNECTED ? "connected" : "NOT connected");
-            if (WiFi.status() == WL_CONNECTED) {
-                Serial.println("[FRIEND] Cache miss — starting online validate");
-                if (friend_mgmt_validate_online(&bundle, SERVER_FALLBACK,
-                                                 VEHICLE_ID, pairingKey) != ESP_OK) {
-                    Serial.println("[FRIEND] Server rejected bundle");
-                    ble_notify_friend_status(1, TOKEN_ERR_INTERNAL);
-                    continue;
-                }
-                Serial.println("[FRIEND] Server accepted bundle");
-            } else {
-                Serial.println("[FRIEND] Reject: cache miss + no WiFi");
-                ble_notify_friend_status(1, TOKEN_ERR_INTERNAL);
-                continue;
-            }
-        }
-
-        // Step 3 — UWB proximity check; start UWB if not already active
-        if (!(xEventGroupGetBits(sysEvents) & EVT_UWB_ACTIVE)) {
-            uint8_t uwbCmd = UWB_CMD_INIT;
-            xQueueSend(uwbQueue, &uwbCmd, pdMS_TO_TICKS(100));
-            // Wait up to 3 s for DW3000 to initialise and set EVT_UWB_ACTIVE
-            uint32_t t0 = millis();
-            while (!(xEventGroupGetBits(sysEvents) & EVT_UWB_ACTIVE) &&
-                   (millis() - t0) < 3000UL) {
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
-        }
-
-        if (!uwb_check_proximity_ok()) {
-            Serial.println("[FRIEND] UWB not in range");
+if (!was_cached) {
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("[FRIEND] Cache miss — starting online validate");
+        if (friend_mgmt_validate_online(&bundle, SERVER_FALLBACK,
+                                         VEHICLE_ID, pairingKey) != ESP_OK) {
+            Serial.println("[FRIEND] Server rejected bundle");
             ble_notify_friend_status(1, TOKEN_ERR_INTERNAL);
             continue;
         }
+        Serial.println("[FRIEND] Server accepted bundle");
+    } else {
+        // MISS + offline → trust ECDSA (đã verify OK ở Step 1)
+        Serial.println("[FRIEND] Accept offline (revocation not checked)");
+        // Không continue → fall through xuống Step 3 (UWB proximity)
+    }
+}
 
-        // Step 4 — unlock
-        uint8_t canCmd = CAN_CMD_UNLOCK;
-        xQueueSend(canQueue, &canCmd, pdMS_TO_TICKS(100));
+        // Step 3 — authorize UWB session and notify Tag.
+        // Tag will discover the main service, send TAG_UWB_READY, do actual ranging,
+        // then send VERIFIED when close enough → CharacteristicCallbacks queues
+        // CAN_CMD_UNLOCK.  We do NOT unlock here — proximity is enforced by UWB.
+        s_friendBundleVerified = true;
         ble_notify_friend_status(0, TOKEN_OK);
-        Serial.printf("[FRIEND] UNLOCK granted for %02x%02x%02x%02x...\n",
+        Serial.printf("[FRIEND] Bundle accepted for %02x%02x%02x%02x... — waiting for UWB\n",
                       bundle.friend_id[0], bundle.friend_id[1],
                       bundle.friend_id[2], bundle.friend_id[3]);
 
