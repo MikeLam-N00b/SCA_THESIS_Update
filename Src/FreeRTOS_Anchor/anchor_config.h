@@ -4,13 +4,18 @@
 // USER CONFIGURATION — edit before flashing
 // =============================================================================
 
-// ── SIM Module key provisioning ───────────────────────────────────────────────
+// ── WiFi key provisioning ─────────────────────────────────────────────────────
+#define WIFI_SSID        "Student"
+#define WIFI_PASSWORD    ""             // điền mật khẩu nếu có
+
+// ── SIM Module key provisioning (dự phòng) ───────────────────────────────────
 #define SIM_RX_PIN       (8)
 #define SIM_TX_PIN       (6)
 #define SIM_BAUD         (115200)
 #define SIM_APN          "v-internet"   // Viettel; Mobifone: "m-wap"; Vinaphone: "m3-world"
+
 #define VEHICLE_ID       "1HGBH41JXMN109186"
-#define SERVER_FALLBACK  "http://139.59.232.153:8000"
+#define SERVER_FALLBACK  "http://10.0.4.83:8000"
 
 // ── BLE ───────────────────────────────────────────────────────────────────────
 #define DEVICE_NAME         "SmartCar_Vehicle"
@@ -62,3 +67,20 @@
 #define BLE_TASK_CORE    (0)
 #define UWB_TASK_CORE    (1)
 #define CAN_TASK_CORE    (1)
+
+// ── Friend Sharing task config ────────────────────────────────────────────────
+// friendMgmtTask: Core 0 (BLE stack lives here); 16 KB for mbedtls pk_verify
+//   + HTTPClient + ArduinoJson.
+// revocationSyncTask: Core 0, lowest priority; sleeps 5 min between syncs.
+#define FRIEND_TASK_STACK    (16384)
+#define FRIEND_TASK_PRIO     (2)
+#define FRIEND_TASK_CORE     (0)
+#define REVSYNC_TASK_STACK   (8192)
+#define REVSYNC_TASK_PRIO    (1)
+#define REVSYNC_TASK_CORE    (0)
+
+// ── Friend Sharing BLE UUIDs ──────────────────────────────────────────────────
+// 16-bit UUIDs 0xFACE / 0xFA01 / 0xFA03 expanded to 128-bit Bluetooth base UUID.
+#define FRIEND_SERVICE_UUID     "0000FACE-0000-1000-8000-00805F9B34FB"
+#define FRIEND_BUNDLE_CHAR_UUID "0000FA01-0000-1000-8000-00805F9B34FB"
+#define FRIEND_STATUS_CHAR_UUID "0000FA03-0000-1000-8000-00805F9B34FB"
