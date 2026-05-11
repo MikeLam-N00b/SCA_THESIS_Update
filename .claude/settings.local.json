@@ -20,7 +20,14 @@
       "Bash(tasklist /FI \"IMAGENAME eq arduino*\")",
       "Bash(tasklist /FI \"IMAGENAME eq java*\")",
       "Bash(xargs wc *)",
-      "Bash(grep -E '\\\\.\\(h|ino\\)$')"
+      "Bash(grep -E '\\\\.\\(h|ino\\)$')",
+      "Bash(python -c \"from PIL import Image, ImageDraw, ImageFont; img = Image.open\\(r'D:\\\\Download\\\\main_flow \\(1\\).png'\\); print\\(img.size, img.mode\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(Remove-Item \"D:\\\\Download\\\\debug_crop1.png\", \"D:\\\\Download\\\\debug_crop2.png\" -ErrorAction SilentlyContinue)",
+      "Bash(del \"D:\\\\Download\\\\debug_crop1.png\" \"D:\\\\Download\\\\debug_crop2.png\")",
+      "Bash(python \"D:\\\\Download\\\\gen_fs_flow.py\")",
+      "Bash(pip install *)",
+      "Bash(python gen_fs_flow.py)"
     ]
   },
   "enabledPlugins": {

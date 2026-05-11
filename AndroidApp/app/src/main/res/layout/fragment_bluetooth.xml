@@ -47,8 +47,9 @@
                     />
             </RelativeLayout>
 
-            <!-- AVAILABLE -->
+            <!-- AVAILABLE DEVICES LABEL — ẩn trong provisioning / UWB mode -->
             <TextView
+                android:id="@+id/tvDevicesLabel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Available device:"
@@ -56,49 +57,7 @@
                 android:textSize="15sp"
                 android:textColor="@color/text_secondary"/>
 
-            <!-- UWB MONITORING PANEL — shown in friend mode after FRIEND_ACCESS_GRANTED -->
-            <LinearLayout
-                android:id="@+id/layoutUwb"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_weight="1"
-                android:orientation="vertical"
-                android:gravity="center"
-                android:visibility="gone">
-
-                <TextView
-                    android:id="@+id/tvUwbStatus"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Đang kết nối Anchor..."
-                    android:textSize="16sp"
-                    android:textColor="@color/text_secondary"
-                    android:gravity="center"/>
-
-                <TextView
-                    android:id="@+id/tvUwbDist"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="24dp"
-                    android:text="--"
-                    android:textSize="64sp"
-                    android:textStyle="bold"
-                    android:textColor="#1565C0"
-                    android:gravity="center"/>
-
-                <TextView
-                    android:id="@+id/tvUwbZone"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text=""
-                    android:textSize="14sp"
-                    android:textColor="@color/text_secondary"
-                    android:gravity="center"/>
-
-            </LinearLayout>
-
-            <!-- LIST — shown in owner mode -->
+            <!-- BLE DEVICE LIST -->
             <ListView
                 android:id="@+id/rvBluetooth"
                 android:layout_width="match_parent"
