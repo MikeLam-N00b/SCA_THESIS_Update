@@ -20,7 +20,10 @@
       "Bash(tasklist /FI \"IMAGENAME eq arduino*\")",
       "Bash(tasklist /FI \"IMAGENAME eq java*\")",
       "Bash(xargs wc *)",
-      "Bash(grep -E '\\\\.\\(h|ino\\)$')"
+      "Bash(grep -E '\\\\.\\(h|ino\\)$')",
+      "Bash(Get-ChildItem -Path \"D:\\\\SCA\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(grep -E '\\\\.\\(c|h\\)$')"
     ]
   },
   "enabledPlugins": {

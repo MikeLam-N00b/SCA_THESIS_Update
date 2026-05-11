@@ -6,8 +6,8 @@
 
 **Project**: Smart Car Access — Đồ án tốt nghiệp HCMUTE 2026
 **Author**: Hiếu (Automotive Engineering Technology, embedded automotive software)
-**Last updated**: 2026-04-25
-**Defense timeline**: ~1 tháng từ ngày update này
+**Last updated**: 2026-05-06
+**Defense timeline**: ~3 tuần từ ngày update này
 
 ---
 
@@ -43,333 +43,314 @@
 
 ### 2.1 Server (FastAPI v3) — ✅ COMPLETE
 
-**File**: `main.py` (v3, 1299 lines)
-**Test file**: `test_flow.py` (18/18 pass)
+**File**: `Server/main.py` (1,308 lines)
+**Test file**: `Server/test_flow.py` (18/18 pass)
 
 **Endpoints implemented**:
-- Pairing: `POST /owner-pairing`, `POST /secure-check-pairing`, `GET /pairing-bootstrap`
-- Friend create: `POST /friend-sharing/create` (X-Owner-Key auth)
-- Friend claim: `GET /friend-sharing/claim/{token}` (single-use)
-- Friend list: `GET /friend-sharing/list/{vid}` (X-Owner-Key)
-- Friend revoke: `DELETE /friend-sharing/{fid}` (X-Owner-Key)
-- Anchor validate: `GET /validate-challenge/{vid}` + `POST /validate-friend-key` (X-Anchor-MAC + nonce)
-- Anchor usage: `POST /friend-used` (X-Anchor-MAC)
-- Anchor revocation poll: `GET /cars/{vid}/revocations?since=`
-- Activity log: `POST /cars/{vid}/activity` (X-Anchor-MAC), `GET /cars/{vid}/activity` (X-Owner-Key)
-- Utility: `GET /health`, `GET /server-public-key`
 
-**Security implemented**:
-- Owner auth via `X-Owner-Key` header (`secrets.compare_digest`)
-- Anchor auth via HMAC-SHA256 over `{vehicle_id}|{timestamp}|{body_sha256_b64}` with `pairing_key`
-- ECDSA P-256 signature on friend bundles
-- Single-use claim tokens (marked claimed after first fetch)
-- Anti-replay nonces (single-use, 120s TTL) on validate endpoint
-- Constant-time signature compare
-- 5-min timestamp window on anchor requests
+| Endpoint | Auth | Sequence |
+|----------|------|----------|
+| `POST /owner-pairing` | — | S1 |
+| `POST /secure-check-pairing` | — | S1 |
+| `GET /check-pairing/{vid}` | — | S1 |
+| `GET /vehicle/{vid}` | X-Owner-Key | S1 |
+| `GET /vehicles` | — | S1 |
+| `DELETE /vehicle/{vid}` | X-Owner-Key | S1 |
+| `POST /friend-sharing/create` | X-Owner-Key | S1 |
+| `DELETE /friend-sharing/{fid}` | X-Owner-Key | S1 |
+| `GET /friend-sharing/list/{vid}` | X-Owner-Key | S1 |
+| `GET /friend-sharing/claim/{token}` | — | S2 |
+| `GET /pairing-bootstrap` | — | S2 |
+| `GET /validate-challenge/{vid}` | — | S3 |
+| `POST /validate-friend-key` | X-Anchor-MAC | S3 |
+| `POST /friend-used` | X-Anchor-MAC | S3 |
+| `GET /cars/{vid}/revocations?since=` | — | S4 |
+| `POST /cars/{vid}/activity` | X-Anchor-MAC | Logging |
+| `GET /cars/{vid}/activity?limit=N` | X-Owner-Key | Logging |
+| `GET /health` | — | Utility |
+| `GET /server-public-key` | — | Utility |
 
-**TODO**: Deploy to Railway/Render with HTTPS. Backup `server_signing_key.pem` securely.
+**Database schema (SQLite)**:
 
-### 2.2 Android App — ⏳ IN PROGRESS
+- **`vehicles`**: `vehicle_id`, `pairing_id`, `pairing_key` (base64 16B), `owner_api_key`, `created_at`
+- **`friend_keys`**: `friend_id` (16 hex), `vehicle_id`, `friend_key` (base64 16B), `friend_name`, `permissions` (bitmask), `issued_at`, `expires_at`, `issuer_sig` (base64 106B), `is_revoked`, `revoked_at`, `uses_count`, `last_used_at`, `claim_token` (unique), `claimed`, `claimed_at`, `bundle_b64` (base64 106B), `created_at`
+- **`access_events`**: `id`, `vehicle_id`, `friend_id`, `event_type`, `result`, `timestamp`, `details`
 
-**Existing code reviewed**: ~30 Kotlin files in `app/src/main/java/com/example/uwb/`
+**Auth mechanisms**:
+- **X-Owner-Key**: `secrets.compare_digest()` trên `owner_api_key` từ DB
+- **X-Anchor-MAC**: HMAC-SHA256(`pairing_key`, `"{vid}|{ts}|{sha256(body)_b64}"`) — timestamp window ±5 phút
 
-**Existing structure**:
-- `Bluetooth/BluetoothFragment.kt` — BLE scan + USB Tag connection
-- `UI/FriendSharingFragment.kt` — QR create + scan (basic v1 implementation)
-- `transport/UsbTransport.kt` — CDC/ACM 115200 to Tag
-- `crypto/AesGcmUtil.kt`, `HKDF_SHA256.kt`, `GeneratePrivateKeyEcc.kt`
-- `dataLg/KeyManager.kt`, `FriendShareStore.kt`, `PairedDeviceStore.kt`
-- `network/ApiClient.kt`, `ApiService.kt` (v1 endpoints)
+**TODO còn lại**:
+- Deploy lên Railway/Render với HTTPS
+- Backup `server_signing_key.pem` (critical — single point of failure)
+- Thay in-memory nonce cache bằng Redis (hiện tại restart sẽ mất)
+- Restrict CORS origins (hiện allow *)
 
-**Brief written**: `android_app_brief.md` (paste to Claude Code)
+---
 
-**Status**: Brief paste-ed to Claude Code, **answering clarifying questions** (round 2 in progress)
+### 2.2 Android App — ⚠️ ~80% COMPLETE
 
-**Pending Claude Code questions (already answered, ready to paste back)**:
-- Round 1: v3 API spec, USB transport flow, KeyManager namespace conflict, Owner revocation, FriendSharingFragment scope
-- Round 2: USB command format, server pubkey cache strategy, ECDSA verify fail action, OwnerFriendListFragment visibility
+**Location**: `AndroidApp/app/src/main/java/com/example/uwb/`
 
-**Next milestone**: Claude Code lists files to modify/create → review → confirm → implement
+**Cấu trúc file (44 Kotlin files)**:
 
-### 2.3 Tag Firmware (ESP32-S3) — ⏳ TODO
+```
+UI/Fragments (10 files)
+├── WelcomeFragment.kt
+├── LoginFragment.kt
+├── EnterVinFragment.kt
+├── VehicleInfoFragment.kt
+├── VerifyingVinFragment.kt
+├── PairingLoadingFragment.kt
+├── FriendSharingFragment.kt         ← Owner: tạo share, gen QR, quét QR claim
+├── OwnerFriendListFragment.kt       ← Owner: list/revoke friends
+├── UwbFragment.kt                   ← UWB distance display
+└── PortraitCaptureActivity.kt
 
-**Existing file**: `esp32_firmware/s3_super_mini_central/s3_super_mini_central.ino` (~740 lines)
+Network (3 files)
+├── ApiService.kt                    ← Retrofit interface (tất cả v3 endpoints)
+├── ApiClient.kt                     ← Retrofit singleton
+└── PairingRepository.kt
+
+Storage (5 files)
+├── KeyManager.kt                    ← SharedPrefs: owner_key_{vin}, friend_key_{vin}_{fid}
+├── FriendShareStore.kt              ← Gson-backed: track claim_url, expiry
+├── ServerPublicKeyStore.kt          ← Cache server ECDSA pubkey
+├── SessionManager.kt
+└── PairedDeviceStore.kt
+
+Crypto (4 files)
+├── EcdsaVerifier.kt                 ← verifyBundleBinary(106B, serverPubKeyDerB64)
+├── GeneratePrivateKeyEcc.kt
+├── AesGcmUtil.kt
+└── HKDF_SHA256.kt
+
+Models (8 files)
+├── FriendKeyBundle.kt               ← 106-byte bundle property accessors
+├── FriendShareRequest/Response.kt
+├── PairingRequest/Response.kt
+└── ServerPublicKeyResponse.kt
+
+Transport (4 files)
+├── UsbTransport.kt                  ← Abstract USB interface
+├── UsbConnection.kt                 ← CDC/ACM 115200
+├── UsbRepository.kt
+└── UsbConstants.kt
+
+Bluetooth (2 files)
+├── BluetoothFragment.kt             ← BLE scan + connect + USB Tag provisioning
+└── BluetoothManager.kt
+
+Adapters (2 files)
+├── FriendListAdapter.kt
+└── VinValidator.kt
+```
+
+**Những gì đã làm được**:
+- Owner pairing flow (ECDH + HKDF + AES-GCM)
+- Friend share creation + QR generation
+- Guest claim + ECDSA local verify (`EcdsaVerifier.kt`)
+- KeyManager namespace tách biệt (đã fix bug cũ)
+- `ServerPublicKeyStore` cache pubkey
+- `OwnerFriendListFragment` (list + revoke)
+- USB transport layer (CDC/ACM)
+- BLE scan/connect
+
+**Còn thiếu / cần test**:
+- USB provisioning commands (`SET_BUNDLE`, `SET_SERVER_PUBKEY`, `SET_TIME`) trong `BluetoothFragment` — cần verify đã gọi đúng sau khi Tag connect
+- End-to-end test thực với server deploy HTTPS
+- Unit test + instrumented test
+- Production build config (server URL, signing)
+
+---
+
+### 2.3 Anchor Firmware (ESP32 trong xe) — ⚠️ ~70% COMPLETE
+
+**Location**: `Src/FreeRTOS_Anchor/FreeRTOS_Anchor_TestSimFetchKey/`
+
+**Cấu trúc file**:
+
+```
+FreeRTOS_Anchor_TestSimFetchKey.ino  ← Main sketch (~300+ lines đọc được)
+anchor_config.h                      ← Config constants (vehicle_id, server URL, BLE UUIDs, pins)
+friend_types.h                       ← Shared structs (friend_bundle_t, cached_friend_t, permission enums)
+friend_token.h                       ← Offline ECDSA verify (ft_parse_bundle_wire, friend_token_verify)
+friend_cache.h                       ← NVS caching (namespace "sca_friends", max 50 friends)
+friend_revocation.h                  ← Revocation blacklist (namespace "sca_revoked", max 100 entries)
+friend_mgmt.h                        ← Online validate + usage report (Seq 3 + Seq 4)
+can_frames.h                         ← CAN frame definitions
+can_commands.h                       ← CANCommands class (unlockCar, lockCar, 15/16 frames)
+```
+
+**FreeRTOS tasks**:
+
+| Task | Core | Priority | Stack | Role |
+|------|------|----------|-------|------|
+| bleTask | 0 | 3 | 10240B | BLE GATT server, nhận bundle từ Tag |
+| uwbTask | 1 | 4 | 8192B | DW3000 TWR ranging, STS |
+| canTask | 1 | 2 | 4096B | MCP2515 CAN lock/unlock |
+| friendMgmtTask | 0 | 2 | 16384B | Online validate (Seq 3) |
+| revocationSyncTask | 0 | 1 | 8192B | Poll revocations mỗi 5 phút |
+
+**Protocols implemented**:
+- BLE: GATT server cho Tag discovery + bundle submission
+- UWB (DW3000): Two-Way Ranging, STS encryption dùng friend_key
+- HMAC-SHA256: X-Anchor-MAC header authentication
+- ECDSA P-256: Offline verify bundled (mbedTLS, cached server pubkey trong NVS)
+- CAN (MCP2515): ISO 11898-1, 1Mbps
+- LTE (A7680C): AT commands, HTTP qua SIM module
+
+**Hardware config** (từ `anchor_config.h`):
+- Vehicle ID hardcode: `"1HGBH41JXMN109186"` — **phải đổi trước demo**
+- Server fallback: `http://10.0.4.83:8000` — **phải đổi sang URL deploy thật**
+- SIM APN: hỗ trợ Viettel/Mobifone/Vinaphone
+
+**Còn thiếu / cần verify**:
+- BLE bundle rx callback + full parsing flow trong .ino
+- UWB STS key derivation từ friend_key
+- Full integration test với Server + Tag
+
+---
+
+### 2.4 Tag Firmware (ESP32-S3 key fob) — ⏳ TODO
+
+**File hiện có**: `Src/FreeRTOS/FreeRTOS_Anchor_TestSimFetchKey/` (xem tag_firmware_brief.md nếu còn)
 
 **Existing functionality**:
 - USB Serial parser (SET_KEY, DISCONNECT)
 - BLE Central scan + connect to Anchor
-- HMAC challenge-response auth with Anchor
-- DW3000 UWB ranging with STS encryption (uses pairing key as STS key)
-- FreeRTOS 3-task architecture (usbSerialTask, bleTask, uwbTask)
+- HMAC challenge-response auth với Anchor
+- DW3000 UWB ranging với STS encryption
 
-**Brief written**: `tag_firmware_brief.md` (paste to Claude Code in separate session)
+**Cần thêm cho v3**:
+- Parser cho `SET_BUNDLE`, `SET_SERVER_PUBKEY`, `SET_TIME`, `GET_STATUS`
+- ECDSA offline verify với mbedTLS (106-byte bundle)
+- Permission enforcement trong UWB action loop
+- Backward compat: `SET_KEY` vẫn work
 
-**Status**: Not yet started — wait for Android App to finish first
-
-### 2.4 Anchor Firmware (ESP32 in vehicle) — ⏳ OPTIONAL
-
-**Brief written**: `anchor_extension_brief.md`
-
-**Status**: Lowest priority — can skip for thesis defense if time-constrained.
-
-**Rationale for deprioritizing**: Demo can show Server + App + Tag pipeline; Anchor revocation polling is a "nice to have" for the offline-first story but not critical for showing the cryptographic correctness.
+**Priority**: Làm sau khi Android hoàn thành end-to-end test.
 
 ---
 
-## 3. Key Decisions Made (and Why)
+## 3. Bundle Format — Critical Cross-Component Spec
 
-### Decision 1: Offline-first with periodic sync (vs always-online)
-
-**Decision**: Anchor verifies bundles offline using cached server public key. Periodic revocation poll every 5 minutes when LTE is available.
-
-**Why**:
-- Latency: 300ms (offline) vs 3-10s (online every unlock)
-- Works in parking garages, basements, server downtime
-- 10x less data/battery than always-online
-- Industry standard: Tesla, BMW, Apple CarKey, CCC Digital Key 3.0 all do this
-
-**Citations available**: CCC Digital Key 3.0, IEEE 1609.2-2022, V2X SCMS, multiple ACM VANET papers (2008-2009).
-
-### Decision 2: ECDSA P-256 with server-side signing key (vs HMAC shared secret)
-
-**Decision**: Server signs bundles with private key; anchor verifies with cached public key.
-
-**Why**:
-- Public-key crypto allows offline verification without sharing secrets
-- Compromised anchor cannot forge new bundles (would need server private key)
-- Industry standard for digital keys (Tesla uses ECDSA P-256 too)
-- Single point of failure: server private key — backup `server_signing_key.pem` is critical
-
-### Decision 3: Permission bitmask scope (UNLOCK + LOCK only)
-
-**Decision**: Minimal permission set for thesis demo: `PERM_UNLOCK = 0x01`, `PERM_LOCK = 0x02`.
-
-**Why**:
-- 1-month timeline doesn't allow full permission matrix
-- Demonstrates the concept without scope creep
-- Easy to extend later (engine start, trunk, valet mode are obvious additions)
-- Mention extensibility as "future work" in thesis
-
-### Decision 4: USB Serial bridge (Phone → Tag) instead of BLE direct
-
-**Decision**: Phone communicates with Tag over USB CDC/ACM 115200; Tag does BLE/UWB to Anchor.
-
-**Why**:
-- This is **already the existing architecture** in Hiếu's project — don't change it
-- Tag is a separate hardware device (key fob style) not the phone
-- Phone is just a bridge between cloud and Tag
-- Demonstrating UWB + STS encryption requires dedicated UWB hardware (DW3000 on Tag)
-
-### Decision 5: KeyManager namespace separation (Owner vs Friend keys)
-
-**Decision**: Separate namespaces:
-- `owner_key_{vehicle_id}` — Owner pairing key (only when user pairs the vehicle)
-- `friend_key_{vehicle_id}_{friend_id}` — Friend bundle (multiple per vehicle)
-
-**Why**:
-- **BUG in current code**: `KeyManager.savePairingKey(vid, fid, key)` overwrites owner key with friend key (same `key_{vid}` namespace)
-- A device can simultaneously be Owner of car A and Friend of car B
-- Required for proper multi-vehicle support
-
-### Decision 6: Single-use claim tokens (vs reusable)
-
-**Decision**: After first `GET /friend-sharing/claim/{token}`, server marks token as claimed; subsequent fetches return 410 Gone.
-
-**Why**:
-- Prevents token sharing/leakage (one Guest = one claim)
-- Owner can detect if Guest's phone was compromised (claim_token already used)
-- Standard practice for one-time secrets
-
-### Decision 7: Skip server reporting on local ECDSA fail
-
-**Decision**: When Android local ECDSA verify fails, show error toast and don't save bundle. Do NOT report failure to server.
-
-**Why**:
-- Most failures are benign (stale cached pubkey, app outdated, bug) — would flood server with false positives
-- Real attackers won't submit forged bundles for logging
-- Server-side anchor validate (Sequence 3) is the proper enforcement point
-- Privacy: avoid logging `friend_id` to server when not necessary
-
-### Decision 8: 1 Android app with 2 modes (vs 2 separate apps)
-
-**Decision**: Single APK that handles both Owner and Guest roles based on stored credentials.
-
-**Why**:
-- Same codebase, less duplication
-- Many users will be both Owner of own car + Guest of borrowed car
-- UI can hide Owner-only features (like "Manage Shares") when no owner key present
-- Demo is cleaner: 1 install per phone
-
----
-
-## 4. Critical Cross-Component Specs
-
-These MUST match byte-exact across Server, App, Tag, Anchor:
-
-### Canonical Signed Message Format
+**Wire format: 106 bytes binary** (dùng ở tất cả 3 component)
 
 ```
-v{version}|{friend_id_hex}|{vehicle_id}|{friend_key_hex}|{issued_at_iso}|{expires_at_iso}|{permissions_decimal}
+Offset  Field           Size  Encoding
+0       version         1     uint8 (= 1)
+1-8     friend_id       8     raw binary
+9-16    vehicle_hash    8     SHA-256(VIN)[:8]
+17-32   friend_key      16    raw binary (AES key)
+33-36   issued_at       4     uint32 big-endian (unix epoch)
+37-40   expires_at      4     uint32 big-endian (unix epoch)
+41      permissions     1     bitmask
+42-73   sig_r           32    ECDSA r component (raw, big-endian)
+74-105  sig_s           32    ECDSA s component (raw, big-endian)
 ```
 
-Example:
-```
-v1|a73a9fc680b792e2|VH001|9ebf37a4b1fb0d138f...|2026-04-25T10:30:00.123456|2026-04-26T10:30:00.123456|1
-```
+- **Signed part**: bytes [0..41] (42 bytes)
+- **Signature**: raw r||s = bytes [42..105] (64 bytes)
+- ECDSA signature algorithm: `SHA256withECDSA`, DER-encoded khi verify trên Android/mbedTLS
 
-**Rules**:
-- `version`: integer (e.g. `1`, not `01`)
-- `friend_id`: 16 lowercase hex chars
-- `vehicle_id`: ASCII string, no padding
-- `friend_key_hex`: 32 lowercase hex chars
-- `issued_at`, `expires_at`: ISO 8601 with microseconds (`%Y-%m-%dT%H:%M:%S.%f`)
-- `permissions`: decimal integer
-- Separator: `|` (pipe)
-- Encoding: UTF-8
-- Signature: ECDSA-with-SHA256, DER format
-
-### Permission Bitmask
-
+**Permission bitmask**:
 ```
 PERM_UNLOCK = 0x01  (bit 0)
 PERM_LOCK   = 0x02  (bit 1)
 ```
 
-### Bundle Wire Format (App → Tag over USB)
+---
 
-195 bytes raw, base64-encoded (~328 chars). See `tag_firmware_brief.md` section C for byte layout.
-
-### USB Serial Commands (App → Tag)
+## 4. USB Serial Commands (App → Tag)
 
 ```
-SET_KEY:<32-hex>\n            (legacy owner mode)
-SET_BUNDLE:<base64>\n         (new v3 friend mode)
-SET_SERVER_PUBKEY:<base64>\n  (cache server ECDSA pubkey on Tag)
-SET_TIME:<unix>\n             (sync RTC since Tag has none)
-GET_STATUS\n                  (query state)
+SET_KEY:<32-hex>\n              legacy owner mode (vẫn support)
+SET_BUNDLE:<base64-106B>\n      friend bundle (v3)
+SET_SERVER_PUBKEY:<base64>\n    cache server ECDSA pubkey trên Tag
+SET_TIME:<unix_seconds>\n       sync clock (Tag không có RTC)
+GET_STATUS\n                    query state
 DISCONNECT\n
 ```
 
-### Anchor Authentication Header
+---
 
-For protected endpoints, anchor includes:
-- `X-Anchor-Timestamp: <unix_seconds>`
-- `X-Anchor-MAC: <base64(HMAC-SHA256(pairing_key, "{vehicle_id}|{timestamp}|{body_sha256_b64}"))>`
+## 5. Anchor Authentication (X-Anchor-MAC)
 
-Server tolerance: ±5 minutes timestamp window.
+```
+X-Anchor-Timestamp: <unix_seconds>
+X-Anchor-MAC: base64(HMAC-SHA256(pairing_key, "{vehicle_id}|{timestamp}|{SHA256(body)_base64}"))
+```
+
+- Timestamp window: ±5 phút
+- Body digest: SHA-256 raw bytes, rồi base64-encode
+- Dùng cho: `/validate-friend-key`, `/friend-used`, `POST /cars/{vid}/activity`
 
 ---
 
-## 5. Recommended Implementation Order
+## 6. Key Decisions (Summary)
 
-**Already done**: Server v3 ✅
-
-**Next 3 sessions** (in order):
-
-### Session A: Android App (3-4 days)
-
-1. Update Models for v3 schema
-2. Add `BundleVerifier.kt` for ECDSA local verify
-3. Add `X-Owner-Key` auth in API service
-4. Update `FriendSharingFragment` (permissions UI, TTL spinner, ECDSA verify)
-5. Refactor `KeyManager` (separate owner/friend namespaces)
-6. Create `OwnerFriendListFragment` (list + revoke)
-7. Add USB provisioning in `BluetoothFragment` (SET_SERVER_PUBKEY + SET_TIME + SET_BUNDLE)
-8. Test end-to-end with server (Postman + real APK)
-
-### Session B: Tag Firmware (2-3 days)
-
-1. Add bundle data structures + base64 parser
-2. Add ECDSA offline verify with mbedTLS
-3. Extend serial command parser (SET_BUNDLE, SET_SERVER_PUBKEY, SET_TIME, GET_STATUS)
-4. Add permission enforcement in UWB action loop
-5. Add backward-compat path (SET_KEY still works)
-6. Test with Python USB script + real bundle from server
-
-### Session C: Anchor Firmware (3-5 days, OPTIONAL)
-
-Skip if time-constrained. Demo can work without anchor revocation polling — anchor will only see bundles via BLE handshake from Tag, and Tag does the verification.
-
-If implementing:
-1. Component `friend_mgmt` skeleton + NVS schemas
-2. ECDSA verify offline (same canonical format)
-3. Revocation sync task (5-min poll)
-4. Cache miss online validate
-5. Activity reporting
+| Decision | What | Why |
+|----------|------|-----|
+| Offline-first | Anchor verify bundle local, poll revocation 5 phút | Latency 300ms vs 3-10s, works offline, industry standard (CCC DK 3.0) |
+| ECDSA P-256 | Server signs bundle, anchor verify với cached pubkey | Non-repudiation; compromised anchor không forge được bundle |
+| 106-byte binary bundle | Fixed-width binary (vs JSON/text) | Deterministic, firmware-friendly, không cần JSON parser trên anchor |
+| Permission bitmask | UNLOCK=0x01, LOCK=0x02 | Minimal cho demo, extensible |
+| Single-use claim token | Marked `claimed=1` sau first fetch | Prevents token sharing/leakage |
+| USB bridge Phone→Tag | Phone nói với Tag qua USB CDC/ACM | Architecture hiện tại của project, Tag cần dedicated UWB hardware |
+| 1 app 2 roles | Owner + Guest cùng APK | Users thường là cả owner xe mình + guest xe bạn |
+| Skip server report khi ECDSA fail | Chỉ show toast, không gửi lên server | False positives flood; server enforce ở Seq 3 là đủ |
 
 ---
 
-## 6. Files Created in Sessions So Far
+## 7. Open Issues
 
-### Source files (in `/mnt/user-data/outputs/`)
-- `main.py` — FastAPI server v3 (production-ready)
-- `test_flow.py` — End-to-end test script (18/18 scenarios)
-
-### Briefs (paste to Claude Code)
-- `README_briefs.md` — Overview + cross-component specs
-- `android_app_brief.md` — Android implementation brief
-- `tag_firmware_brief.md` — Tag firmware brief
-- `anchor_extension_brief.md` — Anchor firmware brief (optional)
-
-### This file
-- `CLAUDE.md` — Session memory (you are reading it)
+- [ ] **Deploy server HTTPS** — hiện `http://10.0.4.83:8000` (LAN). Cần public URL trước demo.
+- [ ] **Backup `server_signing_key.pem`** — mất file này = mất toàn bộ bundle trust.
+- [ ] **Anchor config hardcode** — `vehicle_id` và server URL trong `anchor_config.h` phải đổi trước deploy.
+- [ ] **Tag time sync** — Tag không có RTC, dựa vào `SET_TIME` từ app. Xem xét fetch từ `/health` server time.
+- [ ] **USB provisioning verify** — cần test thực tế: connect Tag → app tự động gửi SET_SERVER_PUBKEY + SET_TIME + SET_BUNDLE hay không.
+- [ ] **In-memory nonce cache** — server restart sẽ clear; dùng Redis trong production.
 
 ---
 
-## 7. Open Questions / Unresolved
+## 8. Defense Talking Points
 
-- [ ] **Production deployment URL** — currently `http://10.0.4.64:8000` (LAN). Need HTTPS public URL before demo (Railway/Render).
-- [ ] **Tag time sync source** — Tag has no RTC. Currently relies on `SET_TIME` from app each USB connect. Consider fetching from `/health` endpoint server time.
-- [ ] **Bundle version migration strategy** — if `bundle_version` increments in future, how do existing Tags handle it? Currently: reject. Future: backward-compat layer.
-- [ ] **Multi-vehicle Owner UX** — if user pairs 2+ vehicles, OwnerFriendListFragment needs vehicle selector (Spinner). Decided but not detailed.
-- [ ] **Anchor LTE provisioning** — assumed working. May need brief separately for LTE setup if anchor doesn't have it yet.
+### 60-second pitch
 
----
+> "Hệ thống Friend Sharing thiết kế theo nguyên tắc **offline-first** chuẩn automotive: ECDSA P-256 cho cryptographic bundle verification, HMAC-SHA256 cho anchor authentication. Trade-off revocation timeliness (5 phút) vs offline availability tuân theo CCC Digital Key 3.0 và IEEE 1609.2-2022. Defense-in-depth: (1) ECDSA bundle signature, (2) UWB proximity ranging chống relay attack, (3) HMAC challenge-response BLE pairing, (4) permission bitmask enforcement."
 
-## 8. Defense-Ready Talking Points
+### Key Q&A
 
-When defending the thesis, lead with these:
+**Q: Sao không check online mỗi unlock?**  
+A: Latency 3-10s vs 300ms; không work trong hầm xe; tốn pin/data 10x. Tesla, BMW, CCC chuẩn đều offline-first.
 
-### Why this design (the 60-second pitch)
+**Q: Revocation gap bao lâu?**  
+A: Tối đa bằng poll interval (5 phút) + network delay. Với internet available, anchor sync trong 5 phút. Nếu offline lâu hơn → fallback online validate khi cache miss.
 
-> "Hệ thống Friend Sharing được thiết kế theo nguyên tắc **offline-first** chuẩn của automotive industry, dùng ECDSA P-256 cho cryptographic verification và HMAC-SHA256 cho anchor authentication. Trade-off giữa revocation timeliness (5 phút) và offline availability tuân theo chuẩn CCC Digital Key 3.0 và IEEE 1609.2-2022. Defense-in-depth gồm 4 lớp: (1) cryptographic bundle signature, (2) UWB proximity ranging chống relay attack, (3) BLE pairing với HMAC challenge-response, (4) permission bitmask enforcement."
+**Q: Sao không dùng TLS/mTLS anchor–server?**  
+A: ESP32 + mbedTLS TLS handshake 5-8s trên LTE chậm; HTTP + HMAC body signing đạt cùng integrity với overhead <1s. Future: mutual TLS.
 
-### Key answers to anticipated questions
+**Q: Server signing key bị leak?**  
+A: Single point of failure. Mitigation roadmap: key rotation, HSM, per-vehicle signing key.
 
-**Q: Sao không dùng TLS/mTLS giữa anchor và server?**
-A: ESP32 + mbedTLS handshake overhead 5-8s trên LTE chậm; HTTP + ECDSA bundle signing đạt cùng mức integrity với overhead 1-2s. Future work: mutual TLS với certificate.
-
-**Q: Sao không check online mỗi lần unlock cho an toàn?**
-A: 3 lý do automotive: (1) latency 3-10s vs 300ms, (2) không work trong hầm xe/khi server down, (3) tốn pin và data 10x. Tesla, BMW, CCC chuẩn đều offline-first.
-
-**Q: Khi Owner revoke, Guest còn unlock được không?**
-A: Phụ thuộc trạng thái anchor. Online ≤5 phút qua → đã sync → reject. Offline lâu → có revocation gap, bounded bởi chu kỳ poll + fallback validate online khi cache miss.
-
-**Q: Server signing key bị leak thì sao?**
-A: Single point of failure trong design hiện tại. Mitigation roadmap: (1) key rotation, (2) HSM/Secure Element, (3) per-vehicle signing key.
-
-**Q: Replay attack trên BLE?**
-A: Bundle hiện chưa có nonce, có replay window trong TTL. Mitigation future work: challenge-response với 16-byte nonce từ anchor + HMAC(friend_key, nonce).
+**Q: Replay attack trên BLE?**  
+A: Bundle có timestamp TTL nhưng không có per-session nonce. Future work: 16-byte nonce từ anchor + HMAC(friend_key, nonce).
 
 ---
 
-## 9. Next Steps for User
+## 9. Implementation Order Remaining
 
-**Immediate** (this week):
-1. Paste round 2 answers back to Claude Code (Android session)
-2. Let Claude Code list files to modify, review carefully
-3. Approve and let it implement
+### Tuần này
+1. Deploy server lên Railway/Render (HTTPS)
+2. Backup `server_signing_key.pem`
+3. Test Android app end-to-end với server HTTPS thật
 
-**This month**:
-1. Finish Android implementation, test with deployed server
-2. Move to Tag firmware in separate Claude Code session
-3. End-to-end test: pair → create share → claim → USB to Tag → BLE to Anchor → unlock
-4. Record demo video (10 scenarios from `README_briefs.md`)
-5. Write thesis chapter using outline in earlier sessions
-
-**For Ampere job**:
-- Internship is concurrent. Friend Sharing project provides strong portfolio piece for embedded security skills.
-- Cite this project in interviews as evidence of automotive cybersecurity awareness (UN R155, ISO/SAE 21434).
+### Sau đó
+4. Verify USB provisioning flow trong `BluetoothFragment` (SET_BUNDLE, SET_SERVER_PUBKEY, SET_TIME)
+5. Tag firmware: thêm SET_BUNDLE parser + ECDSA verify (mbedTLS)
+6. Anchor firmware: full integration test (BLE rx → verify → CAN unlock)
+7. End-to-end demo: pair → create share → claim (Guest phone) → USB to Tag → BLE to Anchor → CAN unlock
+8. Record demo video
 
 ---
 
@@ -377,11 +358,12 @@ A: Bundle hiện chưa có nonce, có replay window trong TTL. Mitigation future
 
 | Date | What changed | Component |
 |------|--------------|-----------|
-| 2026-04-22 | Initial server v2 written and tested | Server |
-| 2026-04-22 | Server v3 with anchor auth + nonce | Server |
-| 2026-04-25 | All 3 component briefs written | Briefs |
-| 2026-04-25 | Session paused mid-Android-implementation | Android |
+| 2026-04-22 | Server v2 written and tested | Server |
+| 2026-04-22 | Server v3 với anchor auth + nonce | Server |
+| 2026-04-25 | All component briefs written | Briefs |
+| 2026-04-25 | Android implementation session | Android |
+| 2026-05-06 | Full codebase review; CLAUDE.md rewritten với actual state | All |
 
 ---
 
-**End of CLAUDE.md** — When updating, increment date at top and add to Update Log.
+**End of CLAUDE.md** — Cập nhật date ở đầu file và thêm vào Update Log mỗi khi hoàn thành milestone.
