@@ -23,7 +23,14 @@
       "Bash(grep -E '\\\\.\\(h|ino\\)$')",
       "Bash(Get-ChildItem -Path \"D:\\\\SCA\" -Directory)",
       "Bash(Select-Object Name)",
-      "Bash(grep -E '\\\\.\\(c|h\\)$')"
+"Bash(grep -E '\\\\.\\(c|h\\)$')",
+      "Bash(python -c \"from PIL import Image, ImageDraw, ImageFont; img = Image.open\\(r'D:\\\\Download\\\\main_flow \\(1\\).png'\\); print\\(img.size, img.mode\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(Remove-Item \"D:\\\\Download\\\\debug_crop1.png\", \"D:\\\\Download\\\\debug_crop2.png\" -ErrorAction SilentlyContinue)",
+      "Bash(del \"D:\\\\Download\\\\debug_crop1.png\" \"D:\\\\Download\\\\debug_crop2.png\")",
+      "Bash(python \"D:\\\\Download\\\\gen_fs_flow.py\")",
+      "Bash(pip install *)",
+      "Bash(python gen_fs_flow.py)"
     ]
   },
   "enabledPlugins": {

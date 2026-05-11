@@ -88,6 +88,13 @@ class UwbFragment : Fragment() {
                 Log.d("UwbFragment", "📥 S3: $response")
 
                 when {
+                    response.startsWith("DIST:") -> {
+                        val dist = response.removePrefix("DIST:").removeSuffix("m").toDoubleOrNull() ?: continue
+                        requireActivity().runOnUiThread {
+                            distance = dist
+                            binding.tvDistance.text = String.format("%.1f m", distance)
+                        }
+                    }
                     response.startsWith("DISTANCE:") -> {
                         val dist = response.substring(9).toDoubleOrNull() ?: continue
                         requireActivity().runOnUiThread {
