@@ -1,9 +1,7 @@
 #pragma once
-// anchor_transport.h — SIM (A7680C AT commands) and WiFi transport + ECDH key provisioning.
+// anchor_transport.h — SIM (A7680C AT commands) + ECDH key provisioning.
 
 #include <HardwareSerial.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/ecp.h>
@@ -32,6 +30,7 @@ static String simAtCmd(const char *cmd, const char *expectToken,
         while (simSerial.available()) buf += (char)simSerial.read();
         if (buf.indexOf(expectToken) >= 0) break;
         if (buf.indexOf("ERROR") >= 0)     break;
+        vTaskDelay(pdMS_TO_TICKS(10));  // yield so IDLE task can reset task watchdog
     }
     String trimmed = buf; trimmed.trim();
     Serial.printf("[AT] << %s\n", trimmed.c_str());
@@ -44,21 +43,86 @@ static bool simAtOk(const char *cmd, unsigned long timeout_ms = 5000) {
 
 static bool simInit() {
     simSerial.begin(SIM_BAUD, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
-    Serial.println("[SIM] Cho module khoi dong (8s)...");
-    vTaskDelay(pdMS_TO_TICKS(8000));
-    while (simSerial.available()) simSerial.read();
+    vTaskDelay(pdMS_TO_TICKS(100));
 
+    // Try AT first — if module is already on, skip PWRKEY toggle
     bool ok = false;
-    for (int i = 0; i < 5; i++) {
-        if (simAtOk("AT")) { ok = true; break; }
+    for (int i = 0; i < 3; i++) {
+        if (simAtOk("AT", 2000)) { ok = true; break; }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    if (!ok) {
+        // Module not responding — toggle PWRKEY to power it on
+#if SIM_PWRKEY_PIN >= 0
+        Serial.println("[SIM] Bat module qua PWRKEY...");
+        pinMode(SIM_PWRKEY_PIN, OUTPUT);
+        digitalWrite(SIM_PWRKEY_PIN, HIGH);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        digitalWrite(SIM_PWRKEY_PIN, LOW);   // Pull LOW to power on
+        vTaskDelay(pdMS_TO_TICKS(1200));     // Hold ~1.2s (A7680C datasheet: >1s)
+        digitalWrite(SIM_PWRKEY_PIN, HIGH);  // Release
+
+        // Wait for "RDY" from module (up to 15s), also accept if AT responds
+        Serial.println("[SIM] Cho module san sang (toi da 15s)...");
+        unsigned long t0 = millis();
+        String bootBuf = "";
+        while (millis() - t0 < 15000) {
+            while (simSerial.available()) bootBuf += (char)simSerial.read();
+            if (bootBuf.indexOf("RDY") >= 0) {
+                Serial.println("[SIM] Module da san sang (RDY)");
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        while (simSerial.available()) simSerial.read();
+
+        // Retry AT after boot
+        for (int i = 0; i < 5; i++) {
+            if (simAtOk("AT", 2000)) { ok = true; break; }
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+#else
+        // No PWRKEY pin — fall back to fixed wait
+        Serial.println("[SIM] Cho module khoi dong (10s)...");
+        vTaskDelay(pdMS_TO_TICKS(10000));
+        while (simSerial.available()) simSerial.read();
+        for (int i = 0; i < 5; i++) {
+            if (simAtOk("AT", 2000)) { ok = true; break; }
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+#endif
+    }
+
+    if (!ok) { Serial.println("[SIM] LOI: AT khong phan hoi"); return false; }
+    simAtOk("ATE0");  // Disable echo
+
+    // Restore full functionality — module may be in AT+CFUN=0 (low-power) from a
+    // previous simEnterSleep() call that was not undone before the ESP32 reset.
+    // s_simSleeping is a RAM variable and resets to false on every boot, so simInit()
+    // must always ensure CFUN=1 regardless of what s_simSleeping says.
+    // Safe to send even when already in CFUN=1 (returns OK immediately).
+    {
+        String cfunResp = simAtCmd("AT+CFUN=1", "OK", 15000);
+        if (cfunResp.indexOf("OK") < 0)
+            Serial.println("[SIM] CFUN=1 no OK — continuing anyway");
+        else
+            vTaskDelay(pdMS_TO_TICKS(1000));  // give SIM card reader time to re-init
+    }
+
+    // SIM card reader may still be initializing after module boot — retry up to 15s
+    bool simCardReady = false;
+    for (int i = 0; i < 15; i++) {
+        String cpin = simAtCmd("AT+CPIN?", "OK", 3000);
+        if (cpin.indexOf("READY") >= 0) { simCardReady = true; break; }
+        // "SIM failure" / "not inserted" may be transient — keep retrying
+        // Hard errors (PIN/PUK locked) contain "SIM PIN" or "SIM PUK"
+        if (cpin.indexOf("SIM PIN") >= 0 || cpin.indexOf("SIM PUK") >= 0) break;
+        Serial.printf("[SIM] CPIN not ready (attempt %d/15) — waiting...\n", i + 1);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
-    if (!ok) { Serial.println("[SIM] LOI: AT khong phan hoi"); return false; }
-    simAtOk("ATE0");
-
-    String cpin = simAtCmd("AT+CPIN?", "OK", 3000);
-    if (cpin.indexOf("READY") < 0) {
-        Serial.println("[SIM] LOI: SIM chua san sang (bi khoa PIN hoac khong co SIM)");
+    if (!simCardReady) {
+        Serial.println("[SIM] LOI: SIM chua san sang (bi khoa PIN, khong co SIM, hoac loi phần cung)");
         return false;
     }
 
@@ -82,18 +146,47 @@ static bool simInit() {
     return true;
 }
 
-// HTTP POST via A7680C AT commands. Returns response body or "" on error.
-static String simHttpPost(const char *url, const char *body) {
+// HTTP POST via A7680C AT commands.
+// extra_userdata: literal \r\n-separated headers for AT+HTTPPARA="USERDATA" (use "\\r\\n" in C string).
+// status_out: if non-null, receives the HTTP status code.
+// Returns response body for 2xx responses, "" on error.
+static String simHttpPost(const char *url, const char *body,
+                           const char *extra_userdata = nullptr,
+                           int *status_out = nullptr) {
     int bodyLen = strlen(body);
     simAtOk("AT+HTTPTERM", 3000);
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    if (!simAtOk("AT+HTTPINIT")) { Serial.println("[HTTP] HTTPINIT failed"); return ""; }
+    if (!simAtOk("AT+HTTPINIT")) {
+        Serial.println("[HTTP] HTTPINIT failed");
+        if (status_out) *status_out = -1; return "";
+    }
 
     String urlCmd = String("AT+HTTPPARA=\"URL\",\"") + url + "\"";
-    if (!simAtOk(urlCmd.c_str(), 5000)) { simAtOk("AT+HTTPTERM", 2000); return ""; }
+    if (!simAtOk(urlCmd.c_str(), 5000)) {
+        simAtOk("AT+HTTPTERM", 2000);
+        if (status_out) *status_out = -1; return "";
+    }
     if (!simAtOk("AT+HTTPPARA=\"CONTENT\",\"application/json\"")) {
-        simAtOk("AT+HTTPTERM", 2000); return "";
+        simAtOk("AT+HTTPTERM", 2000);
+        if (status_out) *status_out = -1; return "";
+    }
+
+    // Add custom headers via USERDATA (e.g. "X-Foo: bar\\r\\nX-Baz: qux\\r\\n")
+    if (extra_userdata) {
+        String udCmd = String("AT+HTTPPARA=\"USERDATA\",\"") + extra_userdata + "\"";
+        while (simSerial.available()) simSerial.read();
+        simSerial.print(udCmd); simSerial.print("\r");
+        unsigned long t2 = millis(); String buf2 = "";
+        while (millis() - t2 < 5000) {
+            while (simSerial.available()) buf2 += (char)simSerial.read();
+            if (buf2.indexOf("OK") >= 0 || buf2.indexOf("ERROR") >= 0) break;
+        }
+        if (buf2.indexOf("OK") < 0) {
+            Serial.println("[HTTP] USERDATA set failed");
+            simAtOk("AT+HTTPTERM", 2000);
+            if (status_out) *status_out = -1; return "";
+        }
     }
 
     String dataCmd = String("AT+HTTPDATA=") + bodyLen + ",10000";
@@ -104,7 +197,10 @@ static String simHttpPost(const char *url, const char *body) {
         while (simSerial.available()) buf += (char)simSerial.read();
         if (buf.indexOf("DOWNLOAD") >= 0) break;
     }
-    if (buf.indexOf("DOWNLOAD") < 0) { simAtOk("AT+HTTPTERM", 2000); return ""; }
+    if (buf.indexOf("DOWNLOAD") < 0) {
+        simAtOk("AT+HTTPTERM", 2000);
+        if (status_out) *status_out = -1; return "";
+    }
 
     simSerial.print(body);
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -132,8 +228,11 @@ static String simHttpPost(const char *url, const char *body) {
             }
         }
     }
-    Serial.printf("[HTTP] Status: %d, Len: %d\n", httpStatus, respLen);
-    if (httpStatus != 200 || respLen <= 0) { simAtOk("AT+HTTPTERM", 2000); return ""; }
+    Serial.printf("[HTTP POST] Status: %d, Len: %d\n", httpStatus, respLen);
+    if (status_out) *status_out = httpStatus;
+    if (httpStatus < 200 || httpStatus >= 300 || respLen <= 0) {
+        simAtOk("AT+HTTPTERM", 2000); return "";
+    }
 
     // Read exactly respLen bytes — base64 data may contain "OK"
     String readCmd = String("AT+HTTPREAD=0,") + respLen;
@@ -159,8 +258,182 @@ static String simHttpPost(const char *url, const char *body) {
     return respBody;
 }
 
+// HTTP GET via A7680C AT commands. Returns response body or "" on error.
+static String simHttpGet(const char *url) {
+    simAtOk("AT+HTTPTERM", 3000);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    if (!simAtOk("AT+HTTPINIT")) { Serial.println("[HTTP GET] HTTPINIT failed"); return ""; }
+
+    String urlCmd = String("AT+HTTPPARA=\"URL\",\"") + url + "\"";
+    if (!simAtOk(urlCmd.c_str(), 5000)) { simAtOk("AT+HTTPTERM", 2000); return ""; }
+
+    while (simSerial.available()) simSerial.read();
+    simSerial.println("AT+HTTPACTION=0");
+    String buf = ""; unsigned long t = millis();
+    int httpStatus = 0, respLen = 0;
+    while (millis() - t < 30000) {
+        while (simSerial.available()) buf += (char)simSerial.read();
+        int idx = buf.indexOf("+HTTPACTION:");
+        if (idx >= 0) {
+            String line = buf.substring(idx);
+            int c1 = line.indexOf(','), c2 = line.indexOf(',', c1 + 1);
+            int nl = line.indexOf('\n', c2);
+            if (c1 > 0 && c2 > 0) {
+                httpStatus = line.substring(c1 + 1, c2).toInt();
+                respLen    = line.substring(c2 + 1, nl > 0 ? nl : c2 + 10).toInt();
+                break;
+            }
+        }
+    }
+    Serial.printf("[HTTP GET] Status: %d, Len: %d\n", httpStatus, respLen);
+    if (httpStatus != 200 || respLen <= 0) { simAtOk("AT+HTTPTERM", 2000); return ""; }
+
+    String readCmd = String("AT+HTTPREAD=0,") + respLen;
+    while (simSerial.available()) simSerial.read();
+    simSerial.println(readCmd);
+    buf = ""; t = millis();
+    while (millis() - t < 10000) {
+        while (simSerial.available()) buf += (char)simSerial.read();
+        int hdrIdx = buf.indexOf("+HTTPREAD:");
+        if (hdrIdx >= 0 && buf.indexOf("\r\n", hdrIdx) >= 0) break;
+    }
+    int hdrIdx = buf.indexOf("+HTTPREAD:");
+    int hdrEnd = buf.indexOf("\r\n", hdrIdx);
+    if (hdrIdx < 0 || hdrEnd < 0) { simAtOk("AT+HTTPTERM", 2000); return ""; }
+
+    String respBody = buf.substring(hdrEnd + 2);
+    t = millis();
+    while ((int)respBody.length() < respLen && millis() - t < 10000)
+        while (simSerial.available()) respBody += (char)simSerial.read();
+    respBody = respBody.substring(0, respLen);
+    respBody.trim();
+    simAtOk("AT+HTTPTERM", 2000);
+    return respBody;
+}
+
+// Sync ESP32 system clock via SIM module NTP then AT+CCLK.
+// Must be called after simInit() succeeds. Requires TZ=UTC0 set in setup().
+static bool simSyncTime() {
+    // A7680C syncs time via NITZ (network-provided) automatically on registration.
+    // AT+CNTP is optional; skip AT+CNTPCID (not supported on A7680C).
+    simAtCmd("AT+CNTP=\"pool.ntp.org\",0", "OK", 3000);
+    String ntpResp = simAtCmd("AT+CNTP", "+CNTP:", 10000);
+    if (ntpResp.indexOf("+CNTP: 1") < 0 && ntpResp.indexOf("+CNTP:1") < 0)
+        Serial.println("[SIM] NTP not confirmed — using NITZ time from AT+CCLK");
+
+    String cclk = simAtCmd("AT+CCLK?", "OK", 3000);
+    // Format: +CCLK: "YY/MM/DD,HH:MM:SS+ZZ"
+    int q1 = cclk.indexOf('"');
+    if (q1 < 0 || (int)cclk.length() < q1 + 18) {
+        Serial.println("[SIM] AT+CCLK parse error");
+        return false;
+    }
+    String ts = cclk.substring(q1 + 1, q1 + 18);  // "YY/MM/DD,HH:MM:SS"
+    struct tm tmv = {};
+    tmv.tm_year = ts.substring(0, 2).toInt() + 100; // 2000-based → 1900-based
+    tmv.tm_mon  = ts.substring(3, 5).toInt() - 1;
+    tmv.tm_mday = ts.substring(6, 8).toInt();
+    tmv.tm_hour = ts.substring(9, 11).toInt();
+    tmv.tm_min  = ts.substring(12, 14).toInt();
+    tmv.tm_sec  = ts.substring(15, 17).toInt();
+    tmv.tm_isdst = 0;
+
+    time_t epoch = mktime(&tmv);  // interpreted as UTC because TZ=UTC0
+    if (epoch < 1000000000L) {
+        Serial.println("[SIM] Invalid time from AT+CCLK");
+        return false;
+    }
+    struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    Serial.printf("[SIM] Time synced: %lu (%s)\n", (unsigned long)epoch, ts.c_str());
+    return true;
+}
+
 // =============================================================================
-// Shared ECDH + AES-GCM key decryption (used by both SIM and WiFi paths)
+// Called from setup() before tasks start, when no key is in NVS.
+// The SIM module powers up in CFUN=1 (RF on, ~30 mA) by default.
+// This opens the UART and sends AT+CFUN=0 immediately so the module
+// idles at ~3 mA until BLE_KEY_CHECK needs it.
+static void simEarlySleep() {
+    simSerial.begin(SIM_BAUD, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    // Try AT — module may still be booting; three attempts is enough
+    for (int i = 0; i < 3; i++) {
+        if (simAtOk("AT", 2000)) break;
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    simAtCmd("AT+CFUN=0", "OK", 5000);
+    s_simSleeping = true;
+    // Do NOT set EVT_SIM_INITIALIZED — simInit() must still run properly
+    // when BLE_KEY_CHECK triggers the full init path.
+    Serial.println("[SIM] Early sleep (CFUN=0) — waiting for first TAG connect");
+}
+
+// =============================================================================
+// SIM sleep / wake — call with simMutex held
+// =============================================================================
+
+// Put A7680C into minimum-functionality mode (RF off, ~3 mA).
+// Clears EVT_SIM_READY so tasks that gate on it will not attempt HTTP.
+static void simEnterSleep() {
+    if (s_simSleeping) return;
+    simAtCmd("AT+CFUN=0", "OK", 5000);
+    s_simSleeping = true;
+    xEventGroupClearBits(sysEvents, EVT_SIM_READY);
+    Serial.println("[SIM] Sleep (CFUN=0)");
+}
+
+// Restore full functionality, re-register on network, re-establish PDP context.
+// Sets EVT_SIM_READY on success.  Returns false if network registration fails.
+static bool simExitSleep() {
+    if (!s_simSleeping) return true;
+    Serial.println("[SIM] Waking...");
+    simAtCmd("AT+CFUN=1", "OK", 15000);
+
+    bool netOk = false;
+    for (int i = 0; i < 30 && !netOk; i++) {
+        String r = simAtCmd("AT+CEREG?", "OK", 3000);
+        if (r.indexOf(",1") >= 0 || r.indexOf(",5") >= 0) netOk = true;
+        else vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    if (!netOk) { Serial.println("[SIM] Wakeup: network timeout"); return false; }
+
+    simAtOk("AT+CGACT=1,1", 10000);
+    s_simSleeping = false;
+    xEventGroupSetBits(sysEvents, EVT_SIM_READY);
+    Serial.println("[SIM] Awake, PDP restored");
+    return true;
+}
+
+// =============================================================================
+// Public SIM session API (acquire / release)
+// =============================================================================
+// Usage pattern:
+//   if (simAcquire()) {
+//       simHttpGet(...); simHttpPost(...);
+//       simRelease();   // puts module back to sleep and releases mutex
+//   }
+
+static bool simAcquire(uint32_t timeoutMs = 30000) {
+    if (xSemaphoreTake(simMutex, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
+        Serial.println("[SIM] simAcquire: mutex timeout");
+        return false;
+    }
+    if (!simExitSleep()) {
+        xSemaphoreGive(simMutex);
+        return false;
+    }
+    return true;
+}
+
+static void simRelease() {
+    simEnterSleep();
+    xSemaphoreGive(simMutex);
+}
+
+// =============================================================================
+// Shared ECDH + AES-GCM key decryption
 // =============================================================================
 
 // Parse /secure-check-pairing JSON response and derive pairing key via ECDH + HKDF + AES-GCM.
@@ -299,64 +572,15 @@ static bool fetchPairingKeyViaSim(char *keyHexOut) {
     return ok;
 }
 
-// =============================================================================
-// WiFi transport
-// =============================================================================
-
-static bool wifiInit() {
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
-    unsigned long t = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        Serial.print(".");
-    }
-    Serial.println();
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[WiFi] LOI: khong ket noi duoc"); return false;
-    }
-    Serial.println("[WiFi] Connected: " + WiFi.localIP().toString());
-
-    // Sync system clock — required for bundle TTL validation (TZ=UTC0 set in setup)
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-    Serial.print("[WiFi] Syncing SNTP time");
-    for (int i = 0; i < 20 && time(nullptr) < 1000000000L; i++) {
-        delay(500); Serial.print(".");
-    }
-    Serial.println();
-    Serial.printf("[WiFi] %s (t=%lu)\n",
-                  time(nullptr) >= 1000000000L ? "Time OK" : "SNTP timeout — timestamps may be wrong",
-                  (unsigned long)time(nullptr));
-    return true;
-}
-
-static String wifiHttpPost(const char *url, const char *body) {
-    HTTPClient http;
-    http.begin(url);
-    http.addHeader("Content-Type", "application/json");
-    int code = http.POST(body);
-    if (code != 200) {
-        Serial.printf("[WiFi HTTP] Status: %d\n", code);
-        http.end(); return "";
-    }
-    String resp = http.getString();
-    http.end();
-    return resp;
-}
-
 // Fetch server ECDSA signing public key from /pairing-bootstrap and cache in NVS.
 // Call once after pairing key is fetched successfully.
 static void fetchServerSigningKey() {
     String url = String(SERVER_FALLBACK) + "/pairing-bootstrap";
-    HTTPClient http;
-    http.begin(url);
-    int code = http.GET();
-    if (code != 200) {
-        Serial.printf("[KEY] /pairing-bootstrap HTTP %d — signing key not cached\n", code);
-        http.end(); return;
+    String resp = simHttpGet(url.c_str());
+    if (resp.length() == 0) {
+        Serial.println("[KEY] /pairing-bootstrap failed — signing key not cached");
+        return;
     }
-    String resp = http.getString();
-    http.end();
 
     StaticJsonDocument<512> doc;
     if (deserializeJson(doc, resp) != DeserializationError::Ok) {
@@ -383,30 +607,3 @@ static void fetchServerSigningKey() {
     }
 }
 
-static bool fetchPairingKeyViaWifi(char *keyHexOut) {
-    mbedtls_pk_context our_pk; mbedtls_pk_init(&our_pk);
-    char pubkey_b64[200];
-    if (_genEcKeyAndPubB64(&our_pk, pubkey_b64, sizeof(pubkey_b64)) < 0) {
-        mbedtls_pk_free(&our_pk); return false;
-    }
-
-    char body[512];
-    {
-        StaticJsonDocument<384> req;
-        req["vehicle_id"]            = VEHICLE_ID;
-        req["client_public_key_b64"] = pubkey_b64;
-        serializeJson(req, body, sizeof(body));
-    }
-    String endpoint = String(SERVER_FALLBACK) + "/secure-check-pairing";
-    Serial.printf("[WiFi HTTP] POST %s\n", endpoint.c_str());
-    String respBody = wifiHttpPost(endpoint.c_str(), body);
-    if (respBody.length() == 0) {
-        Serial.println("[WiFi HTTP] LOI: khong nhan duoc response");
-        mbedtls_pk_free(&our_pk); return false;
-    }
-    Serial.println("[WiFi HTTP] Response: " + respBody.substring(0, 80));
-
-    bool ok = _decryptPairingResponse(&our_pk, respBody, keyHexOut);
-    mbedtls_pk_free(&our_pk);
-    return ok;
-}

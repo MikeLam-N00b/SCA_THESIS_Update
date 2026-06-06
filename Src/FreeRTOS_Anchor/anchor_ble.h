@@ -130,8 +130,9 @@ class MyServerCallbacks : public BLEServerCallbacks {
         xEventGroupClearBits(sysEvents, EVT_AUTHED | EVT_UWB_ACTIVE);
         Serial.printf("BLE: Tag connected (gen=%u)\n", (unsigned)connectionGen);
 
+        // Queue key check first — key is loaded (or fetched from server) before challenge is sent.
         BleCmdMsg msg = {};
-        msg.type    = BLE_SEND_CHALLENGE;
+        msg.type    = BLE_KEY_CHECK;
         msg.data[0] = connectionGen;
         xQueueSend(bleQueue, &msg, pdMS_TO_TICKS(10));
     }
@@ -190,8 +191,8 @@ class BundleSubmitCallbacks : public BLECharacteristicCallbacks {
 // =============================================================================
 
 static void startBLE() {
-    hexStringToBytes(bleKeyHex, pairingKey, 16);
-    printHex("Pairing key: ", pairingKey, 16);
+    // pairingKey is loaded lazily in BLE_KEY_CHECK (at connection time).
+    // Do NOT load it here — bleKeyHex may be empty when BLE starts without a stored key.
 
     BLEDevice::init(DEVICE_NAME);
     BLEDevice::setPower(ESP_PWR_LVL_P9);

@@ -10,12 +10,15 @@
 
 // ── EventGroup bits ───────────────────────────────────────────────────────────
 static EventGroupHandle_t sysEvents;
-#define EVT_CONNECTED  (1 << 0)   // Tag connected BLE
-#define EVT_AUTHED     (1 << 1)   // Tag HMAC auth OK
-#define EVT_UWB_ACTIVE (1 << 2)   // DW3000 ranging active
+#define EVT_CONNECTED       (1 << 0)   // Tag connected BLE
+#define EVT_AUTHED          (1 << 1)   // Tag HMAC auth OK
+#define EVT_UWB_ACTIVE      (1 << 2)   // DW3000 ranging active
+#define EVT_SIM_READY       (1 << 3)   // SIM module up, PDP active, time synced
+#define EVT_SIM_INITIALIZED (1 << 4)   // simInit() succeeded at least once; never cleared
 
 // ── BLE command queue ─────────────────────────────────────────────────────────
 enum BleCmdType : uint8_t {
+    BLE_KEY_CHECK,          // triggered on connect: check NVS key, fetch from server if absent
     BLE_SEND_CHALLENGE,
     BLE_AUTH_VERIFY,
     BLE_NOTIFY_UWB_ACTIVE,
@@ -41,6 +44,12 @@ static QueueHandle_t canQueue;      // depth 4
 // ── SPI mutex + bundle queue ──────────────────────────────────────────────────
 static SemaphoreHandle_t spiMutex;
 static QueueHandle_t     bundleQueue;  // depth 2
+
+// ── SIM mutex + sleep state ───────────────────────────────────────────────────
+// simMutex serialises all SIM AT-command sessions across tasks.
+// s_simSleeping tracks whether the module is in AT+CFUN=0 (RF off) low-power mode.
+static SemaphoreHandle_t simMutex;
+static volatile bool     s_simSleeping = false;
 
 // ── Volatile state ────────────────────────────────────────────────────────────
 static volatile bool    carUnlocked            = false;

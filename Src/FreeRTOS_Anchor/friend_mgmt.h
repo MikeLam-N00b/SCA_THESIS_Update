@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <mbedtls/md.h>
 #include <mbedtls/sha256.h>
@@ -10,11 +9,12 @@
 #include "friend_types.h"
 #include "friend_cache.h"
 #include "friend_revocation.h"
+// anchor_transport.h must be included before this file to provide simHttpGet/simHttpPost.
 
 // =============================================================================
 // Friend Management — HTTP helpers, online validate (Seq 3), revocation sync (Seq 4)
 //
-// All HTTP functions use WiFi / Arduino HTTPClient (same stack as wifiHttpPost).
+// All HTTP functions use the SIM module (A7680C) via simHttpGet / simHttpPost.
 // Authenticated endpoints use HMAC-SHA256 over
 //   "{vehicle_id}|{unix_timestamp}|{body_sha256_b64}"
 // keyed with the 16-byte pairing_key (shared secret from /secure-check-pairing).
@@ -41,33 +41,27 @@ static void fm_hmac_b64(const uint8_t key[16], const char *message,
     out_b64[b64len] = '\0';
 }
 
-// ── HTTP transport ────────────────────────────────────────────────────────────
+// ── HTTP transport (via SIM module) ──────────────────────────────────────────
 
-/** Plain HTTP GET.  Returns HTTP status code or <0 on connection error. */
+// Plain HTTP GET via SIM. Returns 200 on success, -1 on error.
 static int fm_get(const char *url, String &out_body) {
-    HTTPClient http;
-    http.begin(url);
-    int code = http.GET();
-    if (code > 0) out_body = http.getString();
-    http.end();
-    return code;
+    out_body = simHttpGet(url);
+    return out_body.length() > 0 ? 200 : -1;
 }
 
 /**
- * Authenticated HTTP POST with X-Anchor-Timestamp / X-Anchor-MAC headers.
+ * Authenticated HTTP POST via SIM with X-Anchor-Timestamp / X-Anchor-MAC headers.
  *
  * MAC = HMAC-SHA256(pairing_key, "{vehicle_id}|{ts}|{SHA256(body)_b64}")
  *
- * Returns HTTP status code or <0 on connection error.
+ * Returns HTTP status code or -1 on connection error.
  */
 static int fm_post_auth(const char *url, const char *body,
                          const char *vehicle_id, const uint8_t pairing_key[16],
                          String &out_body) {
-    // Current Unix timestamp as string
     char ts[16];
     snprintf(ts, sizeof(ts), "%u", (unsigned)time(NULL));
 
-    // SHA-256 of request body → base64
     uint8_t body_hash[32];
     mbedtls_sha256((const unsigned char *)body, strlen(body), body_hash, 0);
     char body_sha_b64[48]; size_t b64len;
@@ -75,21 +69,21 @@ static int fm_post_auth(const char *url, const char *body,
                           &b64len, body_hash, 32);
     body_sha_b64[b64len] = '\0';
 
-    // Build MAC input and compute HMAC
     char mac_msg[256];
     snprintf(mac_msg, sizeof(mac_msg), "%s|%s|%s", vehicle_id, ts, body_sha_b64);
     char mac_b64[48];
     fm_hmac_b64(pairing_key, mac_msg, mac_b64);
 
-    HTTPClient http;
-    http.begin(url);
-    http.addHeader("Content-Type",       "application/json");
-    http.addHeader("X-Anchor-Timestamp", ts);
-    http.addHeader("X-Anchor-MAC",       mac_b64);
-    int code = http.POST(body);
-    if (code > 0) out_body = http.getString();
-    http.end();
-    return code;
+    // Build USERDATA headers for A7680C — use literal \r\n (4 chars) as separator
+    char userdata[256];
+    snprintf(userdata, sizeof(userdata),
+             "X-Anchor-Timestamp: %s\\r\\nX-Anchor-MAC: %s\\r\\n",
+             ts, mac_b64);
+
+    int status = 0;
+    out_body = simHttpPost(url, body, userdata, &status);
+    if (status == 0) status = out_body.length() > 0 ? 200 : -1;
+    return status;
 }
 
 // ── Anti-replay nonce ─────────────────────────────────────────────────────────

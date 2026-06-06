@@ -1,13 +1,36 @@
 #pragma once
-// anchor_tasks.h — FreeRTOS task implementations: ble, uwb, can, friendMgmt, revocationSync.
+// anchor_tasks.h — FreeRTOS task implementations: ble, uwb, can, simInit, friendMgmt, revocationSync.
 
-#include <WiFi.h>
 #include <Preferences.h>
 #include "anchor_ble.h"
 #include "anchor_uwb.h"
 #include "friend_cache.h"
 #include "friend_revocation.h"
 #include "friend_mgmt.h"
+
+// =============================================================================
+// TASK: simInitTask — Core 0, Priority 1 (one-shot)
+// Background SIM init so setup() / BLE are not blocked when key is already in NVS.
+// Sets EVT_SIM_READY on success; tasks that need network wait on this bit.
+// =============================================================================
+
+static void simInitTask(void *param) {
+    Serial.printf("[simInitTask] started on core %d\n", xPortGetCoreID());
+    if (simInit()) {
+        // EVT_SIM_INITIALIZED is permanent — signals that simSerial is open and module
+        // was successfully registered. Used by BLE_KEY_CHECK to gate simAcquire().
+        xEventGroupSetBits(sysEvents, EVT_SIM_INITIALIZED);
+        simSyncTime();
+        xEventGroupSetBits(sysEvents, EVT_SIM_READY);
+        Serial.printf("[simInitTask] SIM ready — online ops enabled (t=%lu)\n",
+                      (unsigned long)time(NULL));
+        // Time synced — sleep SIM until revocationSyncTask or friendMgmtTask needs it
+        simEnterSleep();
+    } else {
+        Serial.println("[simInitTask] SIM init failed — online ops disabled");
+    }
+    vTaskDelete(NULL);
+}
 
 // =============================================================================
 // TASK: bleTask — Core 0, Priority 3
@@ -22,6 +45,86 @@ static void bleTask(void *param) {
     for (;;) {
         if (xQueueReceive(bleQueue, &msg, pdMS_TO_TICKS(200)) == pdTRUE) {
             switch (msg.type) {
+
+            // ---------------------------------------------------------------
+            // BLE_KEY_CHECK — triggered by onConnect.
+            // Reads NVS for pairing key; if absent, waits for SIM and fetches
+            // from server. Queues BLE_SEND_CHALLENGE once key is ready.
+            // Disconnects TAG on any unrecoverable failure.
+            // ---------------------------------------------------------------
+            case BLE_KEY_CHECK: {
+                uint8_t myGen = msg.data[0];
+                if (myGen != (uint8_t)connectionGen || !deviceConnected) break;
+
+                checkStoredKey();   // fresh NVS read
+
+                if (hasKey) {
+                    // Key already provisioned — load it into pairingKey
+                    hexStringToBytes(bleKeyHex, pairingKey, 16);
+                    printHex("[KEY_CHECK] Key loaded from NVS: ", pairingKey, 16);
+                } else {
+                    Serial.println("[KEY_CHECK] No key in NVS — initialising SIM to fetch key...");
+
+                    // Open a SIM session.  Two cases:
+                    //   a) EVT_SIM_INITIALIZED not set: SIM was never started
+                    //      (no-key boot path) — call simInit() from scratch.
+                    //   b) EVT_SIM_INITIALIZED set: simInitTask already ran
+                    //      (e.g. key deleted after pairing) — use simAcquire().
+                    bool simSessionOpen = false;
+
+                    if (!(xEventGroupGetBits(sysEvents) & EVT_SIM_INITIALIZED)) {
+                        // SIM serial never opened — init from scratch under mutex
+                        if (xSemaphoreTake(simMutex, pdMS_TO_TICKS(30000)) == pdTRUE) {
+                            if (simInit()) {
+                                simSyncTime();
+                                xEventGroupSetBits(sysEvents, EVT_SIM_INITIALIZED | EVT_SIM_READY);
+                                simSessionOpen = true;
+                            } else {
+                                Serial.println("[KEY_CHECK] simInit() failed");
+                                xSemaphoreGive(simMutex);
+                            }
+                        } else {
+                            Serial.println("[KEY_CHECK] SIM mutex timeout");
+                        }
+                    } else {
+                        // SIM already initialised — simAcquire() handles wakeup
+                        simSessionOpen = simAcquire(30000);
+                    }
+
+                    bool fetched = false;
+                    char newKey[33];
+                    if (simSessionOpen) {
+                        fetched = fetchPairingKeyViaSim(newKey);
+                        if (fetched) {
+                            saveKeyToNVS(newKey);
+                            fetchServerSigningKey();
+                        }
+                        simRelease();  // sleeps SIM + releases mutex
+                    }
+
+                    if (!fetched) {
+                        Serial.println("[KEY_CHECK] Key fetch failed — disconnecting TAG");
+                        pBleServer->disconnect(pBleServer->getConnId());
+                        break;
+                    }
+                    hexStringToBytes(bleKeyHex, pairingKey, 16);
+                    printHex("[KEY_CHECK] Key fetched from server: ", pairingKey, 16);
+                }
+
+                // Abort if TAG disconnected while we were fetching
+                if (myGen != (uint8_t)connectionGen || !deviceConnected) {
+                    Serial.printf("[KEY_CHECK] TAG disconnected during key check (gen=%u) — skip\n",
+                                  myGen);
+                    break;
+                }
+
+                // Key is ready — proceed to send challenge
+                BleCmdMsg chal = {};
+                chal.type    = BLE_SEND_CHALLENGE;
+                chal.data[0] = myGen;
+                xQueueSend(bleQueue, &chal, pdMS_TO_TICKS(10));
+                break;
+            }
 
             case BLE_SEND_CHALLENGE: {
                 uint8_t myGen = msg.data[0];
@@ -222,26 +325,12 @@ static void friendMgmtTask(void *param) {
             continue;
         }
 
-        // Step 2 — cache lookup; first-time use may require online validate
+        // Step 2 — offline revocation check is already done inside friend_token_verify().
+        // Trust ECDSA signature without online server validation — revocation is
+        // handled by revocationSyncTask polling every 5 minutes.
         cached_friend_t cf;
         bool was_cached = (friend_cache_get(bundle.friend_id, &cf) == ESP_OK);
-        Serial.printf("[FRIEND] Cache: %s\n", was_cached ? "HIT" : "MISS");
-
-        if (!was_cached) {
-            if (WiFi.status() == WL_CONNECTED) {
-                Serial.println("[FRIEND] Cache miss — starting online validate");
-                if (friend_mgmt_validate_online(&bundle, SERVER_FALLBACK,
-                                                VEHICLE_ID, pairingKey) != ESP_OK) {
-                    Serial.println("[FRIEND] Server rejected bundle");
-                    ble_notify_friend_status(1, TOKEN_ERR_INTERNAL);
-                    continue;
-                }
-                Serial.println("[FRIEND] Server accepted bundle");
-            } else {
-                // Offline miss — trust ECDSA (already verified OK in Step 1)
-                Serial.println("[FRIEND] Accept offline (revocation not checked)");
-            }
-        }
+        Serial.printf("[FRIEND] Cache: %s\n", was_cached ? "HIT" : "MISS (first use — trust ECDSA)");
 
         // Step 3 — authorize UWB session; actual unlock happens after VERIFIED from Tag
         memcpy(s_activeFriendKey, bundle.friend_key, FRIEND_KEY_LEN);
@@ -267,12 +356,6 @@ static void friendMgmtTask(void *param) {
         } else {
             friend_cache_increment_usage(bundle.friend_id);
         }
-
-        // Step 5 — async usage report (best-effort)
-        if (WiFi.status() == WL_CONNECTED) {
-            friend_mgmt_report_usage(bundle.friend_id, "UNLOCK",
-                                     SERVER_FALLBACK, VEHICLE_ID, pairingKey);
-        }
     }
 }
 
@@ -284,17 +367,37 @@ static void friendMgmtTask(void *param) {
 static void revocationSyncTask(void *param) {
     Serial.printf("[revSyncTask] started on core %d\n", xPortGetCoreID());
 
+    // Print heartbeat every 60s so user can confirm system is alive
+    unsigned long lastHeartbeat = 0;
+
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(5UL * 60 * 1000));
+        vTaskDelay(pdMS_TO_TICKS(60UL * 1000));
 
         uint32_t ts = (uint32_t)time(NULL);
-        bool wifiUp = (WiFi.status() == WL_CONNECTED);
-        Serial.printf("[revSyncTask] Wakeup: t=%lu WiFi=%s\n",
-                      (unsigned long)ts, wifiUp ? "up" : "down");
+        EventBits_t simBits = xEventGroupGetBits(sysEvents);
+        bool simInited = (simBits & EVT_SIM_INITIALIZED) != 0;
+        bool simActive = (simBits & EVT_SIM_READY)       != 0;
+        const char *simState = !simInited ? "not ready"
+                             : simActive  ? "active"
+                             :              "sleeping";
+        Serial.printf("[SYS] alive t=%lu BLE=%s SIM=%s\n",
+                      (unsigned long)ts,
+                      !bleStarted     ? "not started" :
+                      deviceConnected ? "connected"   : "advertising",
+                      simState);
 
-        if (!wifiUp) continue;
+        // Revocation sync every 5 minutes (after 5 heartbeat ticks)
+        lastHeartbeat++;
+        if (lastHeartbeat < 5) continue;
 
-        friend_mgmt_sync_revocations(SERVER_FALLBACK, VEHICLE_ID);
+        if (!simInited) continue;  // SIM never came up — skip sync
+
+        // Wake SIM, run sync, then sleep again
+        if (simAcquire()) {
+            friend_mgmt_sync_revocations(SERVER_FALLBACK, VEHICLE_ID);
+            simRelease();
+        }
+
         friend_cache_remove_expired();
 
         uint16_t max_ttl_h = 720;
@@ -306,5 +409,6 @@ static void revocationSyncTask(void *param) {
             }
         }
         friend_revocation_cleanup_old((uint32_t)max_ttl_h * 3600UL);
+        lastHeartbeat = 0;
     }
 }

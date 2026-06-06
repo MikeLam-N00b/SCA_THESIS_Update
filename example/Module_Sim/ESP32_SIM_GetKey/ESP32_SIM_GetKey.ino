@@ -24,7 +24,7 @@
 // CẤU HÌNH
 // =============================================================================
 #define simSerial   Serial2
-#define RX_PIN      5
+#define RX_PIN      8
 #define TX_PIN      6
 #define SIM_BAUD    115200
 

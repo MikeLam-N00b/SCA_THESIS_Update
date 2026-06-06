@@ -39,6 +39,6 @@ void loop() {
   if (abs(current_mA) < CURRENT_DEADBAND_mA) current_mA = 0.0;
   if (voltage_V < 0.01) voltage_V = 0.0;
 
-  Serial.printf("%.3f V | %.2f mA | %.2f mW\n", voltage_V, current_mA, power_mW);
+  Serial.printf("%.2f mA\n", current_mA);
   delay(500);
 }

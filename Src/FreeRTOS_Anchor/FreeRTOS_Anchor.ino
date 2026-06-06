@@ -18,18 +18,17 @@
 #include <mbedtls/ecdh.h>
 #include <mbedtls/gcm.h>
 #include <mbedtls/base64.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
 #include "friend_types.h"
 #include "friend_revocation.h"
 #include "friend_cache.h"
 #include "friend_token.h"
-#include "friend_mgmt.h"
 
+// anchor_transport.h must come before friend_mgmt.h — provides simHttpGet/simHttpPost
 #include "anchor_ipc.h"
 #include "anchor_crypto.h"
 #include "anchor_nvs.h"
 #include "anchor_transport.h"
+#include "friend_mgmt.h"
 #include "anchor_ble.h"
 #include "anchor_uwb.h"
 #include "anchor_tasks.h"
@@ -66,47 +65,26 @@ void setup() {
     uwbQueue    = xQueueCreate(4, sizeof(uint8_t));
     canQueue    = xQueueCreate(4, sizeof(uint8_t));
     spiMutex    = xSemaphoreCreateMutex();
+    simMutex    = xSemaphoreCreateMutex();
     bundleQueue = xQueueCreate(2, sizeof(friend_bundle_t));
 
-    if (!sysEvents || !bleQueue || !uwbQueue || !canQueue || !spiMutex || !bundleQueue) {
+    if (!sysEvents || !bleQueue || !uwbQueue || !canQueue || !spiMutex || !simMutex || !bundleQueue) {
         Serial.println("FreeRTOS primitives alloc failed — halting"); while (1);
     }
 
-    // Load key from NVS; if absent, fetch via WiFi then cache the server signing key
+    // Check NVS for stored key (for logging only — BLE always starts).
+    // Key is loaded lazily in BLE_KEY_CHECK when a TAG first connects.
     checkStoredKey();
-    if (!hasKey) {
-        Serial.println("No key in NVS — fetching via WiFi...");
-        if (wifiInit()) {
-            char key[33];
-            if (fetchPairingKeyViaWifi(key)) {
-                saveKeyToNVS(key);
-                fetchServerSigningKey();
-            } else {
-                Serial.println("[WiFi] Failed to fetch pairing key — pair the vehicle first.");
-            }
-        } else {
-            Serial.println("[WiFi] Connect failed — cannot fetch key.");
-        }
-
-        // SIM fallback — uncomment to use A7680C instead of WiFi
-        // if (simInit()) {
-        //     char key[33];
-        //     if (fetchPairingKeyViaSim(key))
-        //         saveKeyToNVS(key);
-        //     else
-        //         Serial.println("[SIM] Failed to fetch pairing key — pair the vehicle first.");
-        // } else {
-        //     Serial.println("[SIM] Module init failed — cannot fetch key.");
-        // }
-    }
-
-    if (!hasKey) {
-        Serial.println("No key — BLE not started.");
+    if (hasKey) {
+        Serial.printf("[SETUP] Key found in NVS: %.8s...\n", bleKeyHex);
     } else {
-        Serial.printf("Key loaded: %.8s...\n", bleKeyHex);
-        startBLE();
-        bleStarted = true;
+        Serial.println("[SETUP] No key in NVS — will fetch from server on first TAG connection");
     }
+
+    // BLE always starts advertising regardless of key state.
+    // key check (and server fetch if needed) happens in BLE_KEY_CHECK at connect time.
+    startBLE();
+    bleStarted = true;
 
     SPI.begin();
 
@@ -115,15 +93,23 @@ void setup() {
     if (!pCanControl->initialize(CAN_CS, CAN_100KBPS, MCP_CLOCK))
         Serial.println("CAN: init failed — continuing without CAN");
 
-    xTaskCreatePinnedToCore(bleTask,            "BLE_Task",     BLE_TASK_STACK,    NULL, BLE_TASK_PRIO,    NULL, BLE_TASK_CORE);
-    xTaskCreatePinnedToCore(uwbTask,            "UWB_Task",     UWB_TASK_STACK,    NULL, UWB_TASK_PRIO,    NULL, UWB_TASK_CORE);
-    xTaskCreatePinnedToCore(canTask,            "CAN_Task",     CAN_TASK_STACK,    NULL, CAN_TASK_PRIO,    NULL, CAN_TASK_CORE);
-    xTaskCreatePinnedToCore(friendMgmtTask,     "Friend_Task",  FRIEND_TASK_STACK, NULL, FRIEND_TASK_PRIO, NULL, FRIEND_TASK_CORE);
-    xTaskCreatePinnedToCore(revocationSyncTask, "RevSync_Task", REVSYNC_TASK_STACK,NULL, REVSYNC_TASK_PRIO,NULL, REVSYNC_TASK_CORE);
+    xTaskCreatePinnedToCore(bleTask,            "BLE_Task",     BLE_TASK_STACK,      NULL, BLE_TASK_PRIO,    NULL, BLE_TASK_CORE);
+    xTaskCreatePinnedToCore(uwbTask,            "UWB_Task",     UWB_TASK_STACK,      NULL, UWB_TASK_PRIO,    NULL, UWB_TASK_CORE);
+    xTaskCreatePinnedToCore(canTask,            "CAN_Task",     CAN_TASK_STACK,      NULL, CAN_TASK_PRIO,    NULL, CAN_TASK_CORE);
+    xTaskCreatePinnedToCore(friendMgmtTask,     "Friend_Task",  FRIEND_TASK_STACK,   NULL, FRIEND_TASK_PRIO, NULL, FRIEND_TASK_CORE);
+    xTaskCreatePinnedToCore(revocationSyncTask, "RevSync_Task", REVSYNC_TASK_STACK,  NULL, REVSYNC_TASK_PRIO,NULL, REVSYNC_TASK_CORE);
+
+    // simInitTask (time sync + revocation) only needed when key already exists.
+    // When no key, SIM stays idle; BLE_KEY_CHECK will init SIM and fetch key
+    // the first time a TAG connects.
+    if (hasKey) {
+        xTaskCreatePinnedToCore(simInitTask, "SIM_Init", SIMINIT_TASK_STACK,
+                                NULL, SIMINIT_TASK_PRIO, NULL, SIMINIT_TASK_CORE);
+    }
 
     Serial.println("All tasks created — FreeRTOS scheduler running");
-    Serial.printf("Core 0: bleTask(P%d) friendMgmtTask(P%d) revSyncTask(P%d)\n",
-                  BLE_TASK_PRIO, FRIEND_TASK_PRIO, REVSYNC_TASK_PRIO);
+    Serial.printf("Core 0: bleTask(P%d) friendMgmtTask(P%d) revSyncTask(P%d) simInitTask(P%d)\n",
+                  BLE_TASK_PRIO, FRIEND_TASK_PRIO, REVSYNC_TASK_PRIO, SIMINIT_TASK_PRIO);
     Serial.printf("Core 1: uwbTask(P%d) canTask(P%d)\n", UWB_TASK_PRIO, CAN_TASK_PRIO);
 }
 

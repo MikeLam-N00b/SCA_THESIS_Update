@@ -4,18 +4,15 @@
 // USER CONFIGURATION — edit before flashing
 // =============================================================================
 
-// ── WiFi key provisioning ─────────────────────────────────────────────────────
-#define WIFI_SSID        "Student"
-#define WIFI_PASSWORD    ""             // điền mật khẩu nếu có
-
-// ── SIM Module key provisioning (dự phòng) ───────────────────────────────────
+// ── SIM Module (A7680C) ───────────────────────────────────────────────────────
 #define SIM_RX_PIN       (8)
 #define SIM_TX_PIN       (6)
+#define SIM_PWRKEY_PIN   (7)    // GPIO kết nối với chân PWRKEY của A7680C; -1 nếu không dùng
 #define SIM_BAUD         (115200)
 #define SIM_APN          "v-internet"   // Viettel; Mobifone: "m-wap"; Vinaphone: "m3-world"
 
 #define VEHICLE_ID       "1HGBH41JXMN109186"
-#define SERVER_FALLBACK  "http://10.0.4.80:8000"
+#define SERVER_FALLBACK  "http://http://139.59.232.153:8000"
 
 // ── BLE ───────────────────────────────────────────────────────────────────────
 #define DEVICE_NAME         "SmartCar_Vehicle"
@@ -69,9 +66,15 @@
 #define UWB_TASK_CORE    (1)
 #define CAN_TASK_CORE    (1)
 
+// ── SIM init task config ──────────────────────────────────────────────────────
+// One-shot background task: init SIM, sync time, set EVT_SIM_READY, then delete self.
+#define SIMINIT_TASK_STACK  (12288)
+#define SIMINIT_TASK_PRIO   (1)
+#define SIMINIT_TASK_CORE   (0)
+
 // ── Friend Sharing task config ────────────────────────────────────────────────
 // friendMgmtTask: Core 0 (BLE stack lives here); 16 KB for mbedtls pk_verify
-//   + HTTPClient + ArduinoJson.
+//   + simHttpPost + ArduinoJson.
 // revocationSyncTask: Core 0, lowest priority; sleeps 5 min between syncs.
 #define FRIEND_TASK_STACK    (16384)
 #define FRIEND_TASK_PRIO     (2)
