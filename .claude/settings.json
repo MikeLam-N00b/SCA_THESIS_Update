@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Bash(where python *)",
+      "Bash(where python3 *)",
+      "Bash(where py *)",
+      "Read(//c/Users/Admin/AppData/Local/Programs/Python/**)",
+      "Bash(/c/Users/Admin/AppData/Local/Programs/Python/Python313/python.exe -c ' *)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Users/Admin/AppData/Local/Programs/Python/Python313/python.exe -c \" *)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Users/Admin/AppData/Local/Programs/Python/Python313/python.exe -c ' *)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Users/Admin/AppData/Local/Programs/Python/Python313/python.exe gen_ble_connection_time.py)",
+      "Bash(python gen_tag_flowchart.py)",
+      "Bash(python -c ' *)"
+    ],
+    "additionalDirectories": [
+      "D:\\Download"
+    ]
+  }
+}

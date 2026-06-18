@@ -1,0 +1,193 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1350 2130" font-family="Arial, sans-serif" font-size="13">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <defs>
+    <marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#333333"/>
+    </marker>
+  </defs>
+  <ellipse cx="660" cy="45" rx="95" ry="28" fill="#a9d18e" stroke="#548235" stroke-width="1.5"/>
+  <text x="660" y="50" text-anchor="middle">Bắt Đầu</text>
+  <line x1="660" y1="73" x2="660" y2="97" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="415" y="97" width="490" height="55" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="660" y="121" text-anchor="middle">Khởi động: init BLE ("UserTag_01"), đặt TX power +9 dBm,</text>
+  <text x="660" y="137" text-anchor="middle">tải server pubkey + friend bundle từ NVS (nếu đã provision)</text>
+  <line x1="660" y1="152" x2="660" y2="177" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polygon points="660,180 865,232 660,284 455,232" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="660" y="229" text-anchor="middle">Có friend bundle</text>
+  <text x="660" y="245" text-anchor="middle">trong NVS?</text>
+  <line x1="660" y1="284" x2="660" y2="308" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="665" y="300" text-anchor="start" font-size="11" font-weight="normal">SAI</text>
+  <polyline points="865,232 1220,232 1220,990 1145,990" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="870" y="224" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG (bundle loaded, isFriendMode=true)</text>
+  <rect x="415" y="308" width="490" height="58" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="660" y="334" text-anchor="middle">Chờ lệnh USB Serial (115200 baud):</text>
+  <text x="660" y="350" text-anchor="middle">SET_KEY / SET_BUNDLE_BIN / SET_SERVER_PUBKEY / SET_TIME</text>
+  <line x1="660" y1="366" x2="660" y2="391" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polygon points="660,391 865,443 660,495 455,443" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="660" y="440" text-anchor="middle">Loại lệnh</text>
+  <text x="660" y="456" text-anchor="middle">nhận được?</text>
+  <polyline points="455,443 275,443 275,505" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="460" y="435" text-anchor="start" font-size="11" font-weight="normal">SET_KEY</text>
+  <polyline points="865,443 990,443 990,505" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="870" y="435" text-anchor="start" font-size="11" font-weight="normal">SET_BUNDLE_BIN</text>
+  <line x1="660" y1="498" x2="660" y2="1565" stroke="#aaaaaa" stroke-width="1" stroke-dasharray="6,4"/>
+  <text x="275" y="496" text-anchor="middle" font-size="13" font-weight="bold">── OWNER MODE ──</text>
+  <text x="990" y="496" text-anchor="middle" font-size="13" font-weight="bold">── FRIEND MODE ──</text>
+  <rect x="120" y="505" width="310" height="50" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="275" y="527" text-anchor="middle">Lưu pairingKey (16 byte hex),</text>
+  <text x="275" y="543" text-anchor="middle">isFriendMode=false, authFailed=false</text>
+  <line x1="275" y1="555" x2="275" y2="580" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="120" y="580" width="310" height="48" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="275" y="601" text-anchor="middle">BLE scan 10s tìm Anchor</text>
+  <text x="275" y="617" text-anchor="middle">(SERVICE_UUID, RSSI &gt; −100 dBm)</text>
+  <line x1="275" y1="628" x2="275" y2="653" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polygon points="275,653 430,703 275,753 120,703" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="275" y="700" text-anchor="middle">Tìm thấy</text>
+  <text x="275" y="716" text-anchor="middle">Anchor?</text>
+  <polyline points="120,703 65,703 65,604 120,604" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="5" y="696" text-anchor="start" font-size="11" font-weight="normal">SAI</text>
+  <line x1="275" y1="753" x2="275" y2="778" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="280" y="771" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG</text>
+  <rect x="120" y="778" width="310" height="48" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="275" y="799" text-anchor="middle">Kết nối BLE (3 retry, MTU=517),</text>
+  <text x="275" y="815" text-anchor="middle">discover SERVICE_UUID + characteristics</text>
+  <line x1="275" y1="826" x2="275" y2="851" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polygon points="275,851 430,901 275,951 120,901" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="275" y="898" text-anchor="middle">Kết nối và discover</text>
+  <text x="275" y="914" text-anchor="middle">thành công?</text>
+  <polyline points="120,901 65,901 65,604 120,604" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="10" y="894" text-anchor="start" font-size="11" font-weight="normal">SAI</text>
+  <line x1="275" y1="951" x2="275" y2="976" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="280" y="969" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG</text>
+  <rect x="120" y="976" width="310" height="50" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="275" y="998" text-anchor="middle">Nhận Challenge 16B từ Anchor</text>
+  <text x="275" y="1014" text-anchor="middle">(BLE notify; fallback readValue nếu miss)</text>
+  <line x1="275" y1="1026" x2="275" y2="1051" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="120" y="1051" width="310" height="55" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="275" y="1075" text-anchor="middle">Tính HMAC-SHA256(pairingKey, challenge)</text>
+  <text x="275" y="1091" text-anchor="middle">→ write response 32B lên AUTH_CHAR</text>
+  <line x1="275" y1="1106" x2="275" y2="1131" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polygon points="275,1131 430,1181 275,1231 120,1181" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="275" y="1178" text-anchor="middle">Nhận AUTH_OK</text>
+  <text x="275" y="1194" text-anchor="middle">từ Anchor?</text>
+  <polyline points="430,1181 485,1181 485,1246" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="435" y="1174" text-anchor="start" font-size="11" font-weight="normal">AUTH_FAIL</text>
+  <rect x="435" y="1246" width="195" height="48" fill="#f8cbad" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="532" y="1267" text-anchor="middle">authFailed=true; chờ SET_KEY</text>
+  <text x="532" y="1283" text-anchor="middle">mới → restart scan từ L2</text>
+  <line x1="275" y1="1231" x2="275" y2="1565" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="280" y="1265" text-anchor="start" font-size="11" font-weight="normal">AUTH_OK</text>
+  <rect x="835" y="505" width="310" height="50" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="990" y="527" text-anchor="middle">Decode base64 → 106-byte binary</text>
+  <text x="990" y="543" text-anchor="middle">(BUNDLE_BIN_SIZE = 106 bytes)</text>
+  <line x1="990" y1="555" x2="990" y2="580" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polygon points="990,580 1155,635 990,690 825,635" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="990" y="632" text-anchor="middle">version==1 &amp;</text>
+  <text x="990" y="648" text-anchor="middle">chưa hết hạn (expires_at)?</text>
+  <polyline points="1155,635 1200,635 1200,700" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="1150" y="628" text-anchor="start" font-size="11" font-weight="normal">SAI</text>
+  <rect x="1150" y="700" width="155" height="40" fill="#f8cbad" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="1227" y="717" text-anchor="middle">BUNDLE_ERR:</text>
+  <text x="1227" y="733" text-anchor="middle">expired / version</text>
+  <line x1="990" y1="690" x2="990" y2="715" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="995" y="708" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG</text>
+  <rect x="835" y="715" width="310" height="62" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="990" y="734" text-anchor="middle">ECDSA verify offline (mbedTLS P-256):</text>
+  <text x="990" y="751" text-anchor="middle">SHA256(bundle[0..41]) vs</text>
+  <text x="990" y="768" text-anchor="middle">sig_r=bundle[42..73], sig_s=bundle[74..105]</text>
+  <line x1="990" y1="777" x2="990" y2="802" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polygon points="990,802 1155,852 990,902 825,852" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="990" y="849" text-anchor="middle">Chữ ký ECDSA</text>
+  <text x="990" y="865" text-anchor="middle">hợp lệ?</text>
+  <polyline points="1155,852 1227,852 1227,740" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="1150" y="845" text-anchor="start" font-size="11" font-weight="normal">SAI</text>
+  <line x1="990" y1="902" x2="990" y2="927" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="995" y="920" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG</text>
+  <rect x="835" y="927" width="310" height="48" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="990" y="948" text-anchor="middle">Save bundle NVS, isFriendMode=true,</text>
+  <text x="990" y="964" text-anchor="middle">Serial "BUNDLE_OK:&lt;friend_id_hex&gt;"</text>
+  <line x1="990" y1="975" x2="990" y2="998" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="835" y="998" width="310" height="48" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="990" y="1019" text-anchor="middle">BLE scan tìm Anchor</text>
+  <text x="990" y="1035" text-anchor="middle">(khớp SERVICE_UUID trong advertisement)</text>
+  <line x1="990" y1="1046" x2="990" y2="1071" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polygon points="990,1071 1145,1121 990,1171 835,1121" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="990" y="1118" text-anchor="middle">Tìm thấy</text>
+  <text x="990" y="1134" text-anchor="middle">Anchor?</text>
+  <polyline points="1145,1121 1195,1121 1195,1022 1145,1022" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="1150" y="1114" text-anchor="start" font-size="11" font-weight="normal">SAI</text>
+  <line x1="990" y1="1171" x2="990" y2="1196" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="995" y="1189" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG</text>
+  <rect x="835" y="1196" width="310" height="48" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="990" y="1217" text-anchor="middle">Kết nối BLE (MTU=517),</text>
+  <text x="990" y="1233" text-anchor="middle">discover FRIEND_SERVICE (UUID 0xFACE)</text>
+  <line x1="990" y1="1244" x2="990" y2="1269" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="835" y="1269" width="310" height="50" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="990" y="1291" text-anchor="middle">Đăng ký notify FRIEND_STATUS_CHAR,</text>
+  <text x="990" y="1307" text-anchor="middle">write 106-byte bundle → FRIEND_BUNDLE_CHAR</text>
+  <line x1="990" y1="1319" x2="990" y2="1344" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polygon points="990,1344 1155,1394 990,1444 825,1394" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="990" y="1391" text-anchor="middle">Nhận FRIEND_STATUS notify</text>
+  <text x="990" y="1407" text-anchor="middle">trong 10 giây?</text>
+  <polyline points="1155,1394 1195,1394 1195,1022 1145,1022" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="1150" y="1387" text-anchor="start" font-size="11" font-weight="normal">Timeout</text>
+  <line x1="990" y1="1444" x2="990" y2="1469" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="995" y="1462" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG</text>
+  <polygon points="990,1469 1145,1519 990,1569 835,1519" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="990" y="1516" text-anchor="middle">FRIEND_OK</text>
+  <text x="990" y="1532" text-anchor="middle">(status byte[0] == 0)?</text>
+  <polyline points="835,1519 760,1519 760,1589" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="700" y="1512" text-anchor="start" font-size="11" font-weight="normal">SAI</text>
+  <rect x="630" y="1589" width="195" height="48" fill="#f8cbad" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="727" y="1610" text-anchor="middle">FRIEND_ACCESS_DENIED,</text>
+  <text x="727" y="1626" text-anchor="middle">ngắt BLE; chờ bundle mới</text>
+  <line x1="990" y1="1569" x2="990" y2="1600" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="995" y="1590" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG</text>
+  <text x="660" y="1615" text-anchor="middle" font-size="13" font-weight="bold">── UWB RANGING (Owner + Friend) ──</text>
+  <polyline points="275,1565 275,1627 420,1627" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polyline points="990,1600 990,1627 900,1627" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="420" y="1627" width="480" height="52" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="660" y="1650" text-anchor="middle">Gửi TAG_UWB_READY → Anchor (BLE write);</text>
+  <text x="660" y="1666" text-anchor="middle">chờ UWB_ACTIVE notify (retry 5s nếu không nhận)</text>
+  <line x1="660" y1="1679" x2="660" y2="1704" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="420" y="1704" width="480" height="62" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="660" y="1723" text-anchor="middle">UWB SS-TWR initiator: gửi POLL frame,</text>
+  <text x="660" y="1740" text-anchor="middle">nhận RESP, kiểm tra STS quality (chống relay attack),</text>
+  <text x="660" y="1757" text-anchor="middle">tính ToF → lọc moving average 5 mẫu → khoảng cách</text>
+  <line x1="660" y1="1766" x2="660" y2="1791" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polygon points="660,1791 860,1844 660,1897 460,1844" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="660" y="1841" text-anchor="middle">Khoảng cách</text>
+  <text x="660" y="1857" text-anchor="middle">&gt; 10m (FAR)?</text>
+  <polyline points="860,1844 985,1844 985,1910" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="865" y="1836" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG</text>
+  <rect x="900" y="1910" width="245" height="58" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="1022" y="1927" text-anchor="middle">Dừng UWB (deinit DW3000);</text>
+  <text x="1022" y="1944" text-anchor="middle">giám sát RSSI mỗi 1s —</text>
+  <text x="1022" y="1961" text-anchor="middle">RSSI &gt; −100? → re-arm UWB1</text>
+  <polyline points="1022,1910 1022,1653 900,1653" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="1030" y="1800" text-anchor="start" font-size="11" font-weight="normal">re-arm</text>
+  <line x1="660" y1="1897" x2="660" y2="1922" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="665" y="1914" text-anchor="start" font-size="11" font-weight="normal">SAI</text>
+  <polygon points="660,1922 875,1975 660,2028 445,1975" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="660" y="1972" text-anchor="middle">dist ≤ 10m VÀ</text>
+  <text x="660" y="1988" text-anchor="middle">chưa trong unlock zone?</text>
+  <polyline points="445,1975 325,1975 325,2045" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="330" y="1967" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG</text>
+  <rect x="195" y="2045" width="260" height="50" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="325" y="2067" text-anchor="middle">Gửi VERIFIED:&lt;dist&gt;m → Anchor,</text>
+  <text x="325" y="2083" text-anchor="middle">tagInUnlockZone = true</text>
+  <line x1="660" y1="2028" x2="660" y2="2053" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="665" y="2046" text-anchor="start" font-size="11" font-weight="normal">SAI</text>
+  <polygon points="660,2058 875,2106 660,2154 445,2106" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="660" y="2103" text-anchor="middle">dist &gt; 10.5m VÀ</text>
+  <text x="660" y="2119" text-anchor="middle">đang trong unlock zone?</text>
+  <polyline points="875,2106 995,2106 995,2045" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="880" y="2098" text-anchor="start" font-size="11" font-weight="normal">ĐÚNG</text>
+  <rect x="905" y="2045" width="255" height="50" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="1032" y="2067" text-anchor="middle">Gửi WARNING:&lt;dist&gt;m → Anchor,</text>
+  <text x="1032" y="2083" text-anchor="middle">tagInUnlockZone = false</text>
+  <polyline points="325,2095 325,2150 260,2150 260,1734 420,1734" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polyline points="995,2095 995,2150 1060,2150 1060,1734 900,1734" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+  <polyline points="445,2106 260,2106 260,1734 420,1734" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#ar)"/>
+</svg>

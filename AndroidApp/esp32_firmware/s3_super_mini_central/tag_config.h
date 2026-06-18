@@ -13,14 +13,14 @@
 // =============================================================================
 // Distance thresholds
 // =============================================================================
-#define UWB_UNLOCK_DISTANCE_M   (3.0f)   // <= threshold → UNLOCK
-#define UWB_LOCK_DISTANCE_M     (3.5f)   // >  threshold → LOCK (0.5m hysteresis)
+#define UWB_UNLOCK_DISTANCE_M   (10.0f)   // <= threshold → UNLOCK
+#define UWB_LOCK_DISTANCE_M     (10.5f)   // >  threshold → LOCK (0.5m hysteresis)
 #define UWB_FAR_DISTANCE_M      (10.0f)  // >  threshold → dừng UWB, dùng RSSI
 
 // =============================================================================
 // RSSI thresholds
 // =============================================================================
-#define RSSI_THRESHOLD_DBM      (-110)   // RSSI trên ngưỡng → BLE đủ gần để kết nối
+#define RSSI_THRESHOLD_DBM      (-200)   // RSSI trên ngưỡng → BLE đủ gần để kết nối
 #define RSSI_CHECK_INTERVAL_MS  (1000U)  // chu kỳ check RSSI khi UWB đang dừng
 
 // =============================================================================

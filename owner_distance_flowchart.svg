@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 1020" font-family="Arial, sans-serif" font-size="14">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#333333"/>
+    </marker>
+  </defs>
+
+  <!-- 1. Start -->
+  <ellipse cx="380" cy="40" rx="85" ry="28" fill="#a9d18e" stroke="#548235" stroke-width="1.5"/>
+  <text x="380" y="45" text-anchor="middle">Bắt đầu</text>
+
+  <line x1="380" y1="68" x2="380" y2="90" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 2. Init UWB -->
+  <rect x="220" y="90" width="320" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="380" y="115" text-anchor="middle">Khởi tạo module UWB (DW3000)</text>
+  <text x="380" y="135" text-anchor="middle">Channel 5, STS Mode 1, 850 kbps</text>
+
+  <line x1="380" y1="150" x2="380" y2="200" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 3. Send Poll (loop target) -->
+  <rect x="250" y="200" width="260" height="50" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="380" y="230" text-anchor="middle">Gửi khung Poll tới Anchor</text>
+
+  <line x1="380" y1="250" x2="380" y2="265" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 4. Decision: response received? -->
+  <polygon points="380,265 530,320 380,375 230,320" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="380" y="315" text-anchor="middle">Nhận được khung</text>
+  <text x="380" y="333" text-anchor="middle">Response từ Anchor?</text>
+
+  <!-- DUNG -> rect5 -->
+  <line x1="380" y1="375" x2="380" y2="430" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="392" y="405" font-size="12">ĐÚNG</text>
+
+  <!-- SAI loop back to rect3 -->
+  <polyline points="530,320 650,320 650,225 510,225" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="640" y="270" font-size="12">SAI</text>
+
+  <!-- 5. Final frame / ToF -->
+  <rect x="250" y="430" width="260" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="380" y="455" text-anchor="middle">Gửi khung Final,</text>
+  <text x="380" y="475" text-anchor="middle">đo thời gian ToF</text>
+
+  <line x1="380" y1="490" x2="380" y2="540" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 6. Distance calc -->
+  <rect x="250" y="540" width="260" height="50" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="380" y="570" text-anchor="middle">Tính khoảng cách d = ToF × c</text>
+
+  <line x1="380" y1="590" x2="380" y2="605" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 7. Decision: distance <= threshold? -->
+  <polygon points="380,605 530,660 380,715 230,660" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="380" y="655" text-anchor="middle">Khoảng cách d ≤</text>
+  <text x="380" y="673" text-anchor="middle">ngưỡng mở khóa?</text>
+
+  <!-- DUNG -> rect8a -->
+  <line x1="230" y1="660" x2="200" y2="760" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="160" y="710" font-size="12">ĐÚNG</text>
+
+  <!-- SAI -> rect8b -->
+  <line x1="530" y1="660" x2="560" y2="760" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="565" y="710" font-size="12">SAI</text>
+
+  <!-- 8a unlock -->
+  <rect x="80" y="760" width="240" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="200" y="785" text-anchor="middle">Gửi lệnh mở khóa</text>
+  <text x="200" y="805" text-anchor="middle">qua CAN tới xe</text>
+
+  <!-- 8b keep locked -->
+  <rect x="440" y="760" width="240" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="560" y="785" text-anchor="middle">Giữ nguyên</text>
+  <text x="560" y="805" text-anchor="middle">trạng thái khóa</text>
+
+  <!-- merge into rect9 -->
+  <polyline points="200,820 200,850 300,850 300,870" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <polyline points="560,820 560,850 460,850 460,870" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 9. Update & display -->
+  <rect x="230" y="870" width="300" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="380" y="895" text-anchor="middle">Cập nhật &amp; hiển thị</text>
+  <text x="380" y="915" text-anchor="middle">khoảng cách trên ứng dụng</text>
+
+  <!-- continuous loop back to rect3 -->
+  <polyline points="380,930 380,980 60,980 60,225 250,225" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+</svg>

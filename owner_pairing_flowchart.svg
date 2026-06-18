@@ -1,0 +1,175 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 2270" font-family="Arial, sans-serif" font-size="13">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#333333"/>
+    </marker>
+  </defs>
+
+  <!-- 1. Start -->
+  <ellipse cx="430" cy="40" rx="100" ry="28" fill="#a9d18e" stroke="#548235" stroke-width="1.5"/>
+  <text x="430" y="45" text-anchor="middle">Bắt đầu</text>
+  <line x1="430" y1="68" x2="430" y2="95" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 2. Enter VIN -->
+  <rect x="210" y="95" width="440" height="70" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="122" text-anchor="middle">Mở app → chọn "Ghép xe mới"</text>
+  <text x="430" y="144" text-anchor="middle">Nhập VIN xe (17 ký tự)</text>
+  <line x1="430" y1="165" x2="430" y2="190" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 3. Decision: VIN valid? -->
+  <polygon points="430,190 625,270 430,350 235,270" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="430" y="262" text-anchor="middle">VIN hợp lệ?</text>
+  <text x="430" y="280" text-anchor="middle">(VinValidator.isValid, 17 ký tự)</text>
+
+  <!-- SAI -> back to Box2 -->
+  <polyline points="625,270 830,270 830,130 650,130" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="700" y="262" font-size="12">SAI → báo lỗi ô VIN</text>
+
+  <!-- DUNG -> diamond4 -->
+  <line x1="430" y1="350" x2="430" y2="380" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="445" y="368" font-size="12">ĐÚNG</text>
+
+  <!-- 4. Decision: cached pairing key? -->
+  <polygon points="430,380 625,460 430,540 235,460" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="430" y="452" text-anchor="middle">Đã có pairing_key cache</text>
+  <text x="430" y="470" text-anchor="middle">cho VIN này? (KeyManager)</text>
+
+  <!-- DUNG -> bypass to diamond10 (use cached key) -->
+  <polyline points="625,460 900,460 900,1140 430,1150" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="700" y="450" font-size="12">ĐÚNG (dùng key cache)</text>
+
+  <!-- SAI -> Box5 -->
+  <line x1="430" y1="540" x2="430" y2="570" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="445" y="558" font-size="12">SAI</text>
+
+  <!-- 5. Generate ECC keypair -->
+  <rect x="200" y="570" width="460" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="595" text-anchor="middle">Tạo cặp khóa ECC SECP256R1 (client)</text>
+  <text x="430" y="615" text-anchor="middle">→ public key (DER) → Base64</text>
+  <line x1="430" y1="630" x2="430" y2="660" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 6. POST /owner-pairing -->
+  <rect x="160" y="660" width="540" height="90" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="685" text-anchor="middle">POST /owner-pairing (vin, client_pub_key_b64)</text>
+  <text x="430" y="707" text-anchor="middle">→ nhận server_pub_key, nonce,</text>
+  <text x="430" y="729" text-anchor="middle">encrypted_pairing_key, pairing_id, owner_api_key</text>
+  <line x1="430" y1="750" x2="430" y2="780" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 7. ECDH + HKDF -->
+  <rect x="190" y="780" width="480" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="805" text-anchor="middle">ECDH(client_priv, server_pub) → shared_secret</text>
+  <text x="430" y="825" text-anchor="middle">→ HKDF-SHA256 → KEK (16 byte)</text>
+  <line x1="430" y1="840" x2="430" y2="870" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 8. Decision: AES-GCM decrypt OK? -->
+  <polygon points="430,870 625,950 430,1030 235,950" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="430" y="942" text-anchor="middle">AES-GCM decrypt(KEK, nonce,</text>
+  <text x="430" y="960" text-anchor="middle">cipher) → pairing_key OK?</text>
+
+  <!-- SAI -> error box -->
+  <line x1="235" y1="950" x2="210" y2="950" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="125" y="938" font-size="12" text-anchor="middle">SAI</text>
+
+  <!-- Error box -->
+  <rect x="20" y="905" width="190" height="90" fill="#f8cbad" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="115" y="930" text-anchor="middle">Hiện lỗi "Lỗi giải mã /</text>
+  <text x="115" y="952" text-anchor="middle">Kết nối thất bại"</text>
+  <text x="115" y="974" text-anchor="middle">→ về EnterVin, sửa VIN</text>
+
+  <!-- Loop back to Box2 -->
+  <polyline points="115,905 115,130 210,130" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="130" y="500" font-size="12">Quay lại nhập VIN (thử lại)</text>
+
+  <!-- DUNG -> Box9 -->
+  <line x1="430" y1="1030" x2="430" y2="1060" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="445" y="1048" font-size="12">ĐÚNG</text>
+
+  <!-- 9. Save keys -->
+  <rect x="200" y="1060" width="460" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="1085" text-anchor="middle">Lưu pairing_key, pairing_id, owner_api_key</text>
+  <text x="430" y="1105" text-anchor="middle">vào KeyManager (SharedPreferences)</text>
+  <line x1="430" y1="1120" x2="430" y2="1150" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 10. Decision: saved Anchor MAC? -->
+  <polygon points="430,1150 625,1230 430,1310 235,1230" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="430" y="1222" text-anchor="middle">Đã lưu MAC Anchor cho VIN này?</text>
+  <text x="430" y="1240" text-anchor="middle">(PairedDeviceStore)</text>
+
+  <!-- DUNG -> bypass to Box13 -->
+  <polyline points="625,1230 850,1230 850,1605 700,1605" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="700" y="1220" font-size="12">ĐÚNG (bỏ qua quét BLE)</text>
+
+  <!-- SAI -> Box11 -->
+  <line x1="430" y1="1310" x2="430" y2="1340" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="445" y="1328" font-size="12">SAI</text>
+
+  <!-- 11. BluetoothFragment: USB connect + BLE scan -->
+  <rect x="160" y="1340" width="540" height="90" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="1365" text-anchor="middle">BluetoothFragment: mở/kết nối USB tới</text>
+  <text x="430" y="1387" text-anchor="middle">ESP32-S3 Tag (VendorID 0x303A)</text>
+  <text x="430" y="1409" text-anchor="middle">+ quét BLE 10 giây tìm thiết bị Anchor</text>
+  <line x1="430" y1="1430" x2="430" y2="1460" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 12. User selects device -->
+  <rect x="200" y="1460" width="460" height="70" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="1487" text-anchor="middle">Người dùng chọn thiết bị Anchor</text>
+  <text x="430" y="1509" text-anchor="middle">trong danh sách BLE</text>
+  <line x1="430" y1="1530" x2="430" y2="1560" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 13. PairingLoadingFragment: send SET_KEY -->
+  <rect x="160" y="1560" width="540" height="90" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="1585" text-anchor="middle">PairingLoadingFragment: mở kết nối USB (nếu cần),</text>
+  <text x="430" y="1607" text-anchor="middle">gửi "SET_KEY:&lt;pairing_key hex&gt;" tới Tag,</text>
+  <text x="430" y="1629" text-anchor="middle">bắt đầu timeout 15 giây</text>
+  <line x1="430" y1="1650" x2="430" y2="1680" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 14. Listen serial responses -->
+  <rect x="140" y="1680" width="580" height="90" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="1705" text-anchor="middle">Lắng nghe Serial từ Tag, parse từng dòng:</text>
+  <text x="430" y="1727" text-anchor="middle">KEY_OK / SCANNING / FOUND: / [BLE] Connected /</text>
+  <text x="430" y="1749" text-anchor="middle">CONNECTED: / AUTH_OK / NOT_FOUND / CONNECT_FAILED / KEY_INVALID</text>
+  <line x1="430" y1="1770" x2="430" y2="1800" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 15. Decision: result from Tag? -->
+  <polygon points="430,1800 625,1880 430,1960 235,1880" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="430" y="1872" text-anchor="middle">Kết quả nhận được</text>
+  <text x="430" y="1890" text-anchor="middle">từ Tag (USB Serial)?</text>
+
+  <!-- Waiting branch -> loop back to Box14 -->
+  <polyline points="235,1880 50,1880 50,1725 140,1725" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="10" y="1810" font-size="11">Đang chờ —</text>
+  <text x="10" y="1825" font-size="11">cập nhật trạng thái</text>
+
+  <!-- Success branch -> Box16 -->
+  <line x1="430" y1="1960" x2="430" y2="1990" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="450" y="1978" font-size="12">Thành công</text>
+
+  <!-- Fail branch -> Box18 -->
+  <polyline points="625,1880 850,1880 850,2030" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="700" y="1870" font-size="12">Thất bại / Timeout 15s</text>
+
+  <!-- 16. Save MAC + success message -->
+  <rect x="180" y="1990" width="500" height="80" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="2020" text-anchor="middle">Lưu VIN ↔ MAC Anchor vào PairedDeviceStore</text>
+  <text x="430" y="2042" text-anchor="middle">Hiển thị "Kết nối thành công" (800ms)</text>
+  <line x1="430" y1="2070" x2="430" y2="2100" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 17. Navigate to UWB -->
+  <rect x="180" y="2100" width="500" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="430" y="2135" text-anchor="middle">Chuyển sang UwbFragment — bắt đầu đo khoảng cách UWB</text>
+  <line x1="430" y1="2160" x2="430" y2="2190" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 18. End -->
+  <ellipse cx="430" cy="2218" rx="90" ry="28" fill="#f8cbad" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="430" y="2223" text-anchor="middle">Kết thúc</text>
+
+  <!-- Fail box -->
+  <rect x="700" y="2030" width="300" height="90" fill="#f8cbad" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="850" y="2060" text-anchor="middle">Hiện Toast lỗi (Key không hợp lệ /</text>
+  <text x="850" y="2080" text-anchor="middle">Không tìm thấy / BLE thất bại / Hết giờ)</text>
+  <text x="850" y="2100" text-anchor="middle">→ sau 1.2s quay lại quét BLE</text>
+
+  <!-- Loop back to Box11 -->
+  <polyline points="1000,2075 1015,2075 1015,1385 700,1385" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+</svg>

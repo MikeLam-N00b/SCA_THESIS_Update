@@ -32,7 +32,9 @@
       "Bash(pip install *)",
       "Bash(python gen_fs_flow.py)",
       "Bash(cd /d D:\\\\SCA)",
-      "Bash(python Diagram/gen_module_overview.py)"
+      "Bash(python Diagram/gen_module_overview.py)",
+      "Bash(find /d/Download -maxdepth 2 -iname \"*DurationSCA*\" 2>/dev/null)",
+      "Read(//d/Download/**)"
     ]
   },
   "enabledPlugins": {

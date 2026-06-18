@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1340" font-family="Arial, sans-serif" font-size="13">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#333333"/>
+    </marker>
+  </defs>
+
+  <!-- 1. Start -->
+  <ellipse cx="380" cy="40" rx="85" ry="28" fill="#a9d18e" stroke="#548235" stroke-width="1.5"/>
+  <text x="380" y="45" text-anchor="middle">Bắt đầu</text>
+  <line x1="380" y1="68" x2="380" y2="90" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 2. BLE connect + load key -->
+  <rect x="190" y="90" width="380" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="380" y="115" text-anchor="middle">Anchor nhận kết nối BLE từ Tag,</text>
+  <text x="380" y="135" text-anchor="middle">đọc pairing_key (NVS / qua SIM)</text>
+  <line x1="380" y1="150" x2="380" y2="200" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 3. Send challenge -->
+  <rect x="220" y="200" width="320" height="50" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="380" y="230" text-anchor="middle">Gửi Challenge ngẫu nhiên (16 byte) tới Tag</text>
+  <line x1="380" y1="250" x2="380" y2="270" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 4. Compute expected HMAC -->
+  <rect x="190" y="270" width="380" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="380" y="295" text-anchor="middle">Tính HMAC kỳ vọng =</text>
+  <text x="380" y="315" text-anchor="middle">HMAC-SHA256(pairing_key, challenge)</text>
+  <line x1="380" y1="330" x2="380" y2="345" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 5. Decision: response received? -->
+  <polygon points="380,345 540,400 380,455 220,400" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="380" y="396" text-anchor="middle">Đã nhận phản hồi HMAC</text>
+  <text x="380" y="414" text-anchor="middle">(32 byte) từ Tag?</text>
+
+  <!-- SAI self-loop: keep polling -->
+  <polyline points="540,400 650,400 650,345 400,345" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="630" y="390" font-size="12">SAI (chờ)</text>
+
+  <!-- DUNG -> diamond 6 -->
+  <line x1="380" y1="455" x2="380" y2="500" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="392" y="482" font-size="12">ĐÚNG</text>
+
+  <!-- 6. Decision: HMAC match? -->
+  <polygon points="380,500 550,560 380,620 210,560" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="380" y="556" text-anchor="middle">HMAC phản hồi khớp</text>
+  <text x="380" y="574" text-anchor="middle">HMAC kỳ vọng?</text>
+
+  <!-- SAI -> AUTH_FAIL -->
+  <line x1="550" y1="560" x2="620" y2="560" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="568" y="550" font-size="12">SAI</text>
+  <rect x="620" y="530" width="240" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="740" y="555" text-anchor="middle">Gửi AUTH_FAIL,</text>
+  <text x="740" y="575" text-anchor="middle">ngắt kết nối BLE</text>
+
+  <!-- AUTH_FAIL -> Ket thuc -->
+  <line x1="740" y1="590" x2="740" y2="624" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <ellipse cx="740" cy="650" rx="70" ry="26" fill="#f8cbad" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="740" y="655" text-anchor="middle">Kết thúc</text>
+
+  <!-- DUNG -> rect7 -->
+  <line x1="380" y1="620" x2="380" y2="670" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="392" y="650" font-size="12">ĐÚNG</text>
+
+  <!-- 7. AUTH_OK / wait for TAG_UWB_READY (re-entry point after UWB disconnect) -->
+  <rect x="190" y="670" width="380" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="380" y="695" text-anchor="middle">Gửi AUTH_OK, đặt cờ EVT_AUTHED;</text>
+  <text x="380" y="715" text-anchor="middle">chờ tín hiệu TAG_UWB_READY</text>
+  <line x1="380" y1="730" x2="380" y2="760" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 8. Loop target: UWB ranging -->
+  <rect x="210" y="760" width="340" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="380" y="785" text-anchor="middle">Đo khoảng cách qua UWB SS-TWR</text>
+  <text x="380" y="805" text-anchor="middle">(responder loop, liên tục)</text>
+  <line x1="380" y1="820" x2="380" y2="845" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- 9. Decision: distance > 5m? -->
+  <polygon points="380,845 560,910 380,975 200,910" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="380" y="906" text-anchor="middle">Khoảng cách</text>
+  <text x="380" y="924" text-anchor="middle">&gt; 5m?</text>
+
+  <!-- DUNG (> 5m) -> ngat UWB -->
+  <line x1="560" y1="910" x2="620" y2="915" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="575" y="900" font-size="12">ĐÚNG</text>
+  <rect x="620" y="880" width="260" height="70" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="750" y="905" text-anchor="middle">Ngắt UWB (UWB_CMD_DEINIT);</text>
+  <text x="750" y="925" text-anchor="middle">nếu xe đang mở → LOCK qua CAN</text>
+
+  <!-- loop back to rect7 (wait TAG_UWB_READY again) -->
+  <polyline points="750,880 750,700 570,700" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- SAI (<= 5m) -> diamond10 -->
+  <line x1="380" y1="975" x2="380" y2="1020" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="392" y="1002" font-size="12">SAI (≤ 5m)</text>
+
+  <!-- 10. Decision: distance <= unlock threshold & VERIFIED? -->
+  <polygon points="380,1020 560,1085 380,1150 200,1085" fill="#f4b183" stroke="#c55a11" stroke-width="1.5"/>
+  <text x="380" y="1075" text-anchor="middle">Khoảng cách ≤ ngưỡng mở khóa</text>
+  <text x="380" y="1093" text-anchor="middle">và Tag gửi VERIFIED?</text>
+
+  <!-- DUNG -> UNLOCK -->
+  <line x1="200" y1="1085" x2="190" y2="1175" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="140" y="1135" font-size="12">ĐÚNG</text>
+  <rect x="60" y="1175" width="260" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="190" y="1200" text-anchor="middle">Gửi lệnh UNLOCK qua CAN</text>
+  <text x="190" y="1220" text-anchor="middle">(nếu xe đang khóa)</text>
+
+  <!-- SAI -> WARNING/LOCK -->
+  <line x1="560" y1="1085" x2="590" y2="1175" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="580" y="1135" font-size="12">SAI</text>
+  <rect x="460" y="1175" width="260" height="60" fill="#9dc3e6" stroke="#2e75b6" stroke-width="1.5"/>
+  <text x="590" y="1200" text-anchor="middle">Tag gửi WARNING/LOCK_CAR:</text>
+  <text x="590" y="1220" text-anchor="middle">gửi lệnh LOCK qua CAN (nếu đang mở)</text>
+
+  <!-- loop back to rect8 (continuous monitoring) -->
+  <polyline points="190,1235 190,1280 40,1280 40,790 210,790" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <polyline points="590,1235 590,1280 880,1280 880,790 550,790" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+</svg>
