@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1650 560" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#555555"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect x="0" y="0" width="1650" height="560" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="825" y="25" font-size="22" font-weight="700" fill="#333333" text-anchor="middle">
+    Cấu trúc màn hình ứng dụng Android - Smart Car Access (SCA)
+  </text>
+
+  <!-- ===================== ROOT ===================== -->
+  <rect x="629" y="50" width="260" height="70" rx="8" fill="#b6d7a8" stroke="#38761d" stroke-width="2"/>
+  <text x="759" y="80" font-size="16" font-weight="700" fill="#274e13" text-anchor="middle">Màn hình chính</text>
+  <text x="759" y="103" font-size="13" fill="#274e13" text-anchor="middle">(Ứng dụng Android SCA)</text>
+
+  <!-- ===================== LEVEL 2 ===================== -->
+  <!-- B1: Ket noi thiet bi -->
+  <rect x="20" y="210" width="220" height="90" rx="8" fill="#9fc5e8" stroke="#1155cc" stroke-width="2"/>
+  <text x="130" y="248" font-size="15" font-weight="700" fill="#1c4587" text-anchor="middle">Kết nối thiết bị</text>
+  <text x="130" y="270" font-size="13" fill="#1c4587" text-anchor="middle">(Bluetooth + USB)</text>
+
+  <!-- B2: Dang nhap & VIN -->
+  <rect x="270" y="210" width="220" height="90" rx="8" fill="#9fc5e8" stroke="#1155cc" stroke-width="2"/>
+  <text x="380" y="248" font-size="15" font-weight="700" fill="#1c4587" text-anchor="middle">Đăng nhập &amp;</text>
+  <text x="380" y="270" font-size="13" fill="#1c4587" text-anchor="middle">Nhập VIN xe</text>
+
+  <!-- B3: Ghep cap xe -->
+  <rect x="520" y="210" width="220" height="90" rx="8" fill="#9fc5e8" stroke="#1155cc" stroke-width="2"/>
+  <text x="630" y="248" font-size="15" font-weight="700" fill="#1c4587" text-anchor="middle">Ghép cặp xe</text>
+  <text x="630" y="270" font-size="13" fill="#1c4587" text-anchor="middle">(Pairing)</text>
+
+  <!-- B4: Thong tin xe -->
+  <rect x="770" y="210" width="220" height="90" rx="8" fill="#9fc5e8" stroke="#1155cc" stroke-width="2"/>
+  <text x="880" y="248" font-size="15" font-weight="700" fill="#1c4587" text-anchor="middle">Thông tin xe &amp;</text>
+  <text x="880" y="270" font-size="13" fill="#1c4587" text-anchor="middle">Trạng thái</text>
+
+  <!-- B5: Do khoang cach UWB -->
+  <rect x="1020" y="210" width="220" height="90" rx="8" fill="#9fc5e8" stroke="#1155cc" stroke-width="2"/>
+  <text x="1130" y="248" font-size="15" font-weight="700" fill="#1c4587" text-anchor="middle">Đo khoảng cách</text>
+  <text x="1130" y="270" font-size="13" fill="#1c4587" text-anchor="middle">UWB</text>
+
+  <!-- B6: Chia se quyen -->
+  <rect x="1295" y="210" width="220" height="90" rx="8" fill="#9fc5e8" stroke="#1155cc" stroke-width="2"/>
+  <text x="1405" y="248" font-size="15" font-weight="700" fill="#1c4587" text-anchor="middle">Chia sẻ quyền</text>
+  <text x="1405" y="270" font-size="13" fill="#1c4587" text-anchor="middle">(Friend Sharing)</text>
+
+  <!-- ===================== LEVEL 3 ===================== -->
+  <!-- F1: Bluetooth -->
+  <rect x="10" y="390" width="210" height="110" rx="8" fill="#ffe599" stroke="#bf9000" stroke-width="2"/>
+  <text x="115" y="420" font-size="13" font-weight="700" fill="#7f6000" text-anchor="middle">Fragment 1</text>
+  <text x="115" y="442" font-size="13" fill="#7f6000" text-anchor="middle">Kết nối Bluetooth</text>
+  <text x="115" y="464" font-size="12" fill="#7f6000" text-anchor="middle">(quét &amp; ghép ESP32-S3 Tag)</text>
+
+  <!-- F2: USB -->
+  <rect x="230" y="390" width="210" height="110" rx="8" fill="#f9cb9c" stroke="#b45f06" stroke-width="2"/>
+  <text x="335" y="420" font-size="13" font-weight="700" fill="#783f04" text-anchor="middle">Fragment 2</text>
+  <text x="335" y="442" font-size="13" fill="#783f04" text-anchor="middle">Cấp phát qua USB</text>
+  <text x="335" y="464" font-size="12" fill="#783f04" text-anchor="middle">(SET_KEY / SET_BUNDLE)</text>
+
+  <!-- F3: Chon xe & bat dau do UWB -->
+  <rect x="895" y="390" width="210" height="110" rx="8" fill="#f4cccc" stroke="#cc0000" stroke-width="2"/>
+  <text x="1000" y="420" font-size="13" font-weight="700" fill="#990000" text-anchor="middle">Fragment 1</text>
+  <text x="1000" y="442" font-size="13" fill="#990000" text-anchor="middle">Chọn xe &amp; bắt đầu</text>
+  <text x="1000" y="464" font-size="12" fill="#990000" text-anchor="middle">đo UWB</text>
+
+  <!-- F4: Hien thi khoang cach UWB -->
+  <rect x="1115" y="390" width="210" height="110" rx="8" fill="#ea9999" stroke="#990000" stroke-width="2"/>
+  <text x="1220" y="420" font-size="13" font-weight="700" fill="#660000" text-anchor="middle">Fragment 2</text>
+  <text x="1220" y="442" font-size="13" fill="#660000" text-anchor="middle">Hiển thị khoảng cách</text>
+  <text x="1220" y="464" font-size="12" fill="#660000" text-anchor="middle">UWB realtime</text>
+
+  <!-- F5: Owner tao Friend Share + QR -->
+  <rect x="1180" y="390" width="210" height="110" rx="8" fill="#ffe599" stroke="#bf9000" stroke-width="2"/>
+  <text x="1285" y="420" font-size="13" font-weight="700" fill="#7f6000" text-anchor="middle">Fragment 4</text>
+  <text x="1285" y="442" font-size="13" fill="#7f6000" text-anchor="middle">Owner: Tạo Friend</text>
+  <text x="1285" y="464" font-size="12" fill="#7f6000" text-anchor="middle">Share + QR code</text>
+
+  <!-- F6: Guest quet QR -->
+  <rect x="1420" y="390" width="210" height="110" rx="8" fill="#f9cb9c" stroke="#b45f06" stroke-width="2"/>
+  <text x="1525" y="420" font-size="13" font-weight="700" fill="#783f04" text-anchor="middle">Fragment 5</text>
+  <text x="1525" y="442" font-size="13" fill="#783f04" text-anchor="middle">Guest: Quét QR</text>
+  <text x="1525" y="464" font-size="12" fill="#783f04" text-anchor="middle">nhận quyền (Bundle)</text>
+
+  <!-- ===================== ARROWS: ROOT -> LEVEL2 ===================== -->
+  <line x1="759" y1="120" x2="130"  y2="210" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="759" y1="120" x2="380"  y2="210" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="759" y1="120" x2="630"  y2="210" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="759" y1="120" x2="880"  y2="210" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="759" y1="120" x2="1130" y2="210" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="759" y1="120" x2="1405" y2="210" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ===================== ARROWS: LEVEL2 -> LEVEL3 ===================== -->
+  <line x1="130"  y1="300" x2="115"  y2="390" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="130"  y1="300" x2="335"  y2="390" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <line x1="1130" y1="300" x2="1000" y2="390" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="1130" y1="300" x2="1220" y2="390" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <line x1="1405" y1="300" x2="1285" y2="390" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="1405" y1="300" x2="1525" y2="390" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Dashed relation arrow between Owner share (F5) and Guest claim (F6) -->
+  <line x1="1390" y1="445" x2="1420" y2="445" stroke="#666666" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+  <!-- ===================== LEGEND ===================== -->
+  <rect x="20" y="525" width="18" height="18" fill="#b6d7a8" stroke="#38761d"/>
+  <text x="44" y="539" font-size="12" fill="#333333">Màn hình gốc (App)</text>
+
+  <rect x="220" y="525" width="18" height="18" fill="#9fc5e8" stroke="#1155cc"/>
+  <text x="244" y="539" font-size="12" fill="#333333">Nhóm chức năng chính (Fragment container)</text>
+
+  <rect x="560" y="525" width="18" height="18" fill="#ffe599" stroke="#bf9000"/>
+  <text x="584" y="539" font-size="12" fill="#333333">Fragment con - thao tác chính</text>
+
+  <rect x="860" y="525" width="18" height="18" fill="#ea9999" stroke="#990000"/>
+  <text x="884" y="539" font-size="12" fill="#333333">Fragment con - hiển thị dữ liệu</text>
+</svg>

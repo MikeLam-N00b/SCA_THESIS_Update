@@ -1,0 +1,5 @@
+- [x] Create `ic_check_green.xml` asset
+- [x] Update `fragment_enter_vin.xml` with status display
+- [x] Update `MainActivity.kt` to store VIN/KEY on discovery
+- [x] Implement UI toggle and logic in `EnterVinFragment.kt`
+- [x] Verify build and functionality

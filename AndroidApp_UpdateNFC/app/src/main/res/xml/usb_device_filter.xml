@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        ESP32-S3 Super Mini — Espressif Systems
+        Vendor ID: 0x303A = 12346 (decimal)
+        Android yêu cầu giá trị decimal trong file filter này.
+    -->
+    <usb-device vendor-id="12346" />
+</resources>

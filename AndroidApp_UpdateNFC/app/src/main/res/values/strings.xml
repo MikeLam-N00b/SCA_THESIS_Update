@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">AndroidApp</string>
+    <string name="smart_access">SMART ACCESS</string>
+    <string name="owpa_full">OWPA\nOne-Way Pairing Access</string>
+    <string name="security_icon">Security status</string>
+    <string name="car_image">Car key central</string>
+    <!-- TODO: Remove or change this placeholder text -->
+    <string name="hello_blank_fragment">Hello blank fragment</string>
+</resources>
