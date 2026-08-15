@@ -579,7 +579,7 @@ static bool connectToServer() {
 
     bool connOk = false;
     for (int attempt = 1; attempt <= 3; attempt++) {
-        if (pClient->connectTimeout(myDevice, 500)) { connOk = true; break; }
+        if (pClient->connectTimeout(myDevice, 2000)) { connOk = true; break; }
         Serial.printf("[bleTask] Connection failed (%d/3)\n", attempt);
         if (attempt < 3) vTaskDelay(pdMS_TO_TICKS(300));
     }
@@ -677,7 +677,7 @@ static bool connectAsFriend() {
 
     bool connOk = false;
     for (int attempt = 1; attempt <= 3; attempt++) {
-        if (pClient->connectTimeout(myDevice, 500)) { connOk = true; break; }
+        if (pClient->connectTimeout(myDevice, 2000)) { connOk = true; break; }
         Serial.printf("[bleTask] Friend connect failed (%d/3)\n", attempt);
         if (attempt < 3) vTaskDelay(pdMS_TO_TICKS(300));
     }

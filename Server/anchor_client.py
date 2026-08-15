@@ -1,7 +1,7 @@
 import requests
 
 # Server configuration
-SERVER_URL = "http://127.0.0.1:8000"
+SERVER_URL = "http://10.0.7.178:8000"
 
 # Static Vehicle ID
 VEHICLE_ID = "VIN123456"

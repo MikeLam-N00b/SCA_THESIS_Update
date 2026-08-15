@@ -34,7 +34,7 @@
 const char* ssid          = "nubia Neo 2";
 const char* password      = "29092004";
 const char* vehicleId     = "1HGBH41JXMN109186";
-static String serverBaseUrl = "http://10.36.83.66:8000"; // Tự động tìm qua mDNS
+static String serverBaseUrl = "http://10.0.7.178:8000"; // Tự động tìm qua mDNS
 
 // ── BLE UUIDs ────────────────────────────────────────────────────────────────
 #define DEVICE_NAME         "SmartCar_Vehicle"

@@ -60,7 +60,7 @@ const char* ssid = "nubia Neo 2";
 const char* password = "29092004";
 
 // Server endpoint
-const char* serverUrl = "http://10.128.55.63:8000/owner-pairing";
+const char* serverUrl = "http://10.0.7.178:8000/owner-pairing";
 
 // Vehicle ID
 const char* vehicleId = "VIN123456";

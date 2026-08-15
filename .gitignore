@@ -1,0 +1,7 @@
+Server/car_access.db
+Server/server_signing_key.pem
+Server/__pycache__/
+__pycache__/
+*.pyc
+.venv/
+AndroidApp/.artifacts/

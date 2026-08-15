@@ -23,6 +23,8 @@ class EnterVinFragment : Fragment() {
 
     private val repo = PairingRepository()
 
+    private var isNfcKeyAvailable = false
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -45,12 +47,40 @@ class EnterVinFragment : Fragment() {
                 return@setOnClickListener
             }
 
-            sendVinToServer(vin)
+            if (isNfcKeyAvailable) {
+                // NFC-based KEY provisioning is currently used.
+                // Directly navigate to BLE flow using the key already stored in KeyManager.
+                android.util.Log.d("SCA_NFC", "Confirm pressed: Using NFC stored KEY")
+                navigateAfterPairing(vin)
+            } else {
+                // TEMPORARILY DISABLED
+                // Server-based KEY retrieval is preserved for future use.
+                /*
+                sendVinToServer(vin)
+                */
+                android.util.Log.d("EnterVin", "Server pairing is temporarily disabled. Please use NFC.")
+                Toast.makeText(requireContext(), "Vui lòng sử dụng thẻ NFC để nhập Key", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /**
+     * Updates the VIN input field with data received from NFC.
+     */
+    fun onVinReceived(vin: String) {
+        isNfcKeyAvailable = true
+        activity?.runOnUiThread {
+            binding.edtVin.setText(vin)
+            binding.edtVin.setSelection(vin.length)
+            android.util.Log.d("SCA_NFC", "VIN inserted into vehicle VIN field")
         }
     }
 
     private fun sendVinToServer(vin: String) {
-
+        // TEMPORARILY DISABLED
+        // NFC-based KEY provisioning is currently used.
+        // Previous server-based KEY retrieval is preserved for future use.
+        /*
         // Nếu key cho VIN này đã có trên disk → dùng lại, không gọi /owner-pairing
         // (tránh server sinh key mới → Anchor NVS lỗi thời → AUTH_FAIL)
         if (KeyManager.loadPairingKey(vin)) {
@@ -108,6 +138,7 @@ class EnterVinFragment : Fragment() {
                     Toast.LENGTH_LONG).show()
             }
         }
+        */
     }
 
     /**

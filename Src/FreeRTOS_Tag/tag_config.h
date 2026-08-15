@@ -4,7 +4,7 @@
 // USER CONFIGURATION — edit before flashing
 // =============================================================================
 // 16-byte pairing key as a 32-char hex string (must match the Anchor's stored key)
-#define PAIRING_KEY_HEX "3DFD47FE325F9655184A88BDAA166742"
+#define PAIRING_KEY_HEX "9d0b658aa467970a32f315ee018d7307"
 
 #define SERVICE_UUID        "12345678-1234-5678-1234-56789abcdef0"
 #define CHARACTERISTIC_UUID "abcdef12-3456-7890-abcd-ef1234567890"

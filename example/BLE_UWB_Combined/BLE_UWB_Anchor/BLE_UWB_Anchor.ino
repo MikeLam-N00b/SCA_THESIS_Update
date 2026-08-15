@@ -74,7 +74,7 @@ const char* ssid = "Student";
 const char* password = "";
 
 /** @brief Server base URL - tự động cập nhật qua mDNS sau khi WiFi kết nối */
-String serverBaseUrl = "http://10.0.4.29:8000";
+String serverBaseUrl = "http://10.0.7.178:8000";
 
 /** @brief Vehicle ID */
 const char* vehicleId = "1HGBH41JXMN109186";
@@ -574,7 +574,7 @@ String fetchKeyFromServer() {
       Serial.println("1. Kiem tra WiFi: " + String(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected"));
       Serial.println("2. Kiem tra server dang chay tai: " + String(serverBaseUrl));
       Serial.println("3. Kiem tra ESP32 va server cung mang");
-      Serial.println("4. Ping server tu may tinh: ping 10.186.199.63");
+      Serial.println("4. Ping server tu may tinh: ping 10.0.7.178");
     } else if (httpCode == -11) {
       Serial.println("HTTPC_ERROR_READ_TIMEOUT");
       Serial.println("Server khong phan hoi - tang timeout hoac kiem tra server");

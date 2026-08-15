@@ -9,7 +9,7 @@ friend_client.py — Simulate the full Friend Sharing flow:
 
 import requests
 
-SERVER_URL = "http://139.59.232.153:8000/"
+SERVER_URL = "http://10.0.7.178:8000"
 VEHICLE_ID = "1HGBH41JXMN109186"
 
 

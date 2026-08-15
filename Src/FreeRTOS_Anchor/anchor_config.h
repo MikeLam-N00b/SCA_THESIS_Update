@@ -12,7 +12,7 @@
 #define SIM_APN          "v-internet"   // Viettel; Mobifone: "m-wap"; Vinaphone: "m3-world"
 
 #define VEHICLE_ID       "1HGBH41JXMN109186"
-#define SERVER_FALLBACK  "http://http://139.59.232.153:8000"
+#define SERVER_FALLBACK  "http://10.0.7.178:8000"
 
 // ── BLE ───────────────────────────────────────────────────────────────────────
 #define DEVICE_NAME         "SmartCar_Vehicle"

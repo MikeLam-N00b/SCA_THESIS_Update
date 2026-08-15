@@ -30,7 +30,7 @@
 
 #define APN         "v-internet"   // Viettel; Mobifone: "m-wap"; Vinaphone: "m3-world"
 
-#define SERVER_BASE_URL "http://139.59.232.153:8000"
+#define SERVER_BASE_URL "http://10.0.7.178:8000"
 #define VEHICLE_ID      "1HGBH41JXMN109186"
 // =============================================================================
 

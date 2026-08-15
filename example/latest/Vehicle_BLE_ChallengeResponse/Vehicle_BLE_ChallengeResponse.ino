@@ -23,7 +23,7 @@ const char* password = "29092004";
 
 // serverBaseUrl tự động cập nhật qua mDNS sau khi WiFi kết nối
 // Fallback nếu mDNS không tìm thấy server
-String serverBaseUrl = "http://192.168.43.100:8000";
+String serverBaseUrl = "http://10.0.7.178:8000";
 
 const char* vehicleId = "1HGBH41JXMN109186";
 

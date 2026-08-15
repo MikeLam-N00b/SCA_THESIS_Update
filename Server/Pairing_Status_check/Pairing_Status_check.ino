@@ -15,7 +15,7 @@
 // ============================================
 const char* ssid = "nubia Neo 2";
 const char* password = "29092004";
-const char* serverBaseUrl = "http://10.186.199.63:8000";
+const char* serverBaseUrl = "http://10.0.7.178:8000";
 const char* vehicleId = "1HGBH41JXMN109186";
 
 // ============================================

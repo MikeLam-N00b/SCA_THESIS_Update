@@ -10,7 +10,7 @@ Usage:
 import sys
 import requests
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "http://10.0.7.178:8000"
 
 
 def list_vehicles():
